@@ -397,22 +397,6 @@ function ToolMain() {
     const code = generateCode();
     setCompletionCode(code);
 
-    // Save a lightweight submission record (votes are stored in LLMAnnotations)
-    const data = {
-      selectedIdx,
-      timestamp: new Date().toISOString(),
-      code,
-      tool: "llm_verification",
-    };
-
-    const submissionsRef = ref(database, "submissions");
-    push(submissionsRef, data)
-      .then(() => {
-        console.log("Submission saved to Firebase");
-      })
-      .catch((error) => {
-        console.error("Error saving to Firebase:", error);
-      });
 
     // Mirror original end-of-task bookkeeping
     if (selectedIdx !== null) {
