@@ -781,6 +781,15 @@ function ToolMain() {
                 Accept
               </Button>
             </div>
+
+            <div className="mt-4">
+              <Button
+                onClick={() => setReviewOpen(false)}
+                className="bg-gray-500 hover:bg-gray-300 text-gray-700 px-3 py-1 rounded text-xs"
+              >
+                Go Back To Instructions
+              </Button>
+            </div>
           </div>
         ) : (
           <>
