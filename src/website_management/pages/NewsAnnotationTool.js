@@ -248,6 +248,36 @@ const DropdownItem = ({ icon, title, children, openTitle, setOpenTitle, color })
    Main Tool (LLM Verification)
 ------------------------------ */
 
+/* -----------------------------
+   Subcategory definitions (for verification popup)
+   Kept consistent with the left-hand guide (shortened for popup)
+------------------------------ */
+
+const SUBCATEGORY_DEFINITIONS = {
+  "exaggeration":
+    "Making something sound artificially much bigger, better, or worse than it really is — or, the opposite, made to sound smaller or less serious than it actually is.",
+  "slogans":
+    "A short, memorable phrase used to spark emotion or support a cause, often simplifying complex ideas into a few words.",
+  "bandwagon":
+    "Telling people to support something because “everyone else” supports it — relying on popularity and social pressure, not evidence.",
+  "casual oversimplification":
+    "Explaining a complex issue with one simple cause or one simple answer, ignoring other factors that are probably involved.",
+  "doubt":
+    "Language that tries to make the audience question whether a person, group, or institution is competent, honest, or legitimate.",
+  "name-calling":
+    "Using a loaded positive or negative label to shape how the audience feels about a person, group, or idea instead of giving evidence.",
+  "demonization":
+    "Describing people or groups as evil, dangerous, corrupt, disgusting, or less than human to turn the audience against them.",
+  "scapegoating":
+    "Blaming an entire group for a broad problem or crisis and framing them as the main cause of widespread harm or decline.",
+};
+
+function getSubcategoryDefinition(subcategory) {
+  if (!subcategory) return "";
+  const key = String(subcategory).trim().toLowerCase();
+  return SUBCATEGORY_DEFINITIONS[key] || "";
+}
+
 function ToolMain() {
   const [taskClosed, setTaskClosed] = useState(false);
   // --- Original side panel UI state (kept as-is for later editing) ---
@@ -754,6 +784,15 @@ function ToolMain() {
                 The LLM labeled this highlight as <strong>{llmForCurrent.subcategory}</strong>.
                 Please confirm whether you agree.
               </p>
+
+              {getSubcategoryDefinition(llmForCurrent.subcategory) && (
+                <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 text-left mb-6">
+                  <p className="text-xs text-gray-500 mb-1 font-semibold">Definition</p>
+                  <p className="text-sm text-gray-800 leading-relaxed">
+                    {getSubcategoryDefinition(llmForCurrent.subcategory)}
+                  </p>
+                </div>
+              )}
 
               <div className="flex justify-center space-x-4">
                 <Button
