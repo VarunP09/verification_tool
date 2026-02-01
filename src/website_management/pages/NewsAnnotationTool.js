@@ -244,6 +244,39 @@ const DropdownItem = ({ icon, title, children, openTitle, setOpenTitle, color })
   );
 };
 
+
+/* -----------------------------
+   Subcategory Definitions (for Verification Popup)
+------------------------------ */
+
+const SUBCATEGORY_DEFINITIONS = {
+  "exaggeration":
+    "When something is made to sound artificially much bigger, better, or worse than it really is — or the opposite: made to sound smaller or less serious than it actually is.",
+  "slogans":
+    "A short, memorable phrase used to spark emotion or support a cause. Slogans simplify complex ideas into a few words and can promote unity, nationalism, or other sentiments.",
+  "bandwagon":
+    "Telling people to support something just because “everyone else” already supports it. This relies on social pressure and popularity, not evidence.",
+  "casual oversimplification":
+    "Blaming a complex issue on just one cause or explaining it with one simple answer, ignoring other factors that are probably involved.",
+  "doubt":
+    "Language that tries to make the audience question whether a person, group, or institution is competent, honest, or legitimate.",
+  "name-calling":
+    "Using a loaded positive or negative label to shape how the audience feels about a person, group, or idea, instead of giving evidence.",
+  "demonization":
+    "Describing people or groups as evil, dangerous, corrupt, disgusting, or less than human to turn the audience against them.",
+  "scapegoating":
+    "Blaming an entire group for a broad problem or crisis, framing them as the main cause of widespread harm or decline.",
+  "no polarizing language":
+    "The paragraph is written in a neutral, factual tone and does not use persuasive propaganda or inflammatory language.",
+  "no polarizing language selected":
+    "The paragraph is written in a neutral, factual tone and does not use persuasive propaganda or inflammatory language.",
+};
+
+const getSubcategoryDefinition = (label) => {
+  const key = (label || "").toString().trim().toLowerCase();
+  return SUBCATEGORY_DEFINITIONS[key] || "";
+};
+
 /* -----------------------------
    Main Tool (LLM Verification)
 ------------------------------ */
@@ -271,7 +304,10 @@ function ToolMain() {
   const [selectedIdx, setSelectedIdx] = useState(null);
 
   const [llmAnnotations, setLlmAnnotations] = useState({});
-  const [reviewOpen, setReviewOpen] = useState(false);
+  const [showPopup, setShowPopup] = useState(false);
+  // Hover tooltip for quick label preview (follows cursor)
+  const [hoverTooltip, setHoverTooltip] = useState({ visible: false, x: 0, y: 0, label: "" });
+
 
   const currentArticle = articles[currentArticleIndex];
   const paragraphs = currentArticle ? paragraphAdd(currentArticle.content) : [];
@@ -329,7 +365,8 @@ function ToolMain() {
     );
     await runTransaction(voteRef, (curr) => (curr ?? 0) + 1);
 
-    setReviewOpen(false);
+    setShowPopup(false);
+    setHoverTooltip((prev) => ({ ...prev, visible: false }));
 
     // Mark this paragraph as completed (exactly 1 vote per paragraph)
     setCompletedCount((prev) => {
@@ -348,11 +385,34 @@ function ToolMain() {
   }
 
   /* -------- Highlight renderer -------- */
-  function renderParagraph(text, span) {
+  function renderParagraph(text, span, subcategoryLabel) {
     const disabled = readyToSubmit;
-    const handleHover = () => {
-      if (!disabled) setReviewOpen(true);
+    const handleClick = () => {
+      if (!disabled) {
+        setHoverTooltip((prev) => ({ ...prev, visible: false }));
+        setShowPopup(true);
+      }
     };
+
+
+    const labelForTooltip = (subcategoryLabel || "").toString().trim() || "Unknown";
+
+    const handleMouseEnter = (e) => {
+      if (disabled) return;
+      setHoverTooltip({ visible: true, x: e.clientX, y: e.clientY, label: labelForTooltip });
+    };
+
+    const handleMouseMove = (e) => {
+      if (disabled) return;
+      setHoverTooltip((prev) =>
+        prev.visible ? { ...prev, x: e.clientX, y: e.clientY } : prev
+      );
+    };
+
+    const handleMouseLeave = () => {
+      setHoverTooltip((prev) => ({ ...prev, visible: false }));
+    };
+
 
     const cls = disabled
       ? "bg-yellow-200 opacity-60 cursor-not-allowed"
@@ -361,7 +421,7 @@ function ToolMain() {
     // No polarizing language: highlight entire paragraph
     if (!span || span === "no polarizing language selected") {
       return (
-        <span className={cls} onMouseEnter={handleHover}>
+        <span className={cls} onClick={handleClick} onMouseEnter={handleMouseEnter} onMouseOver={handleMouseEnter} onMouseMove={handleMouseMove} onMouseLeave={handleMouseLeave}>
           {text}
         </span>
       );
@@ -371,7 +431,7 @@ function ToolMain() {
     if (idx === -1) {
       // Fallback: highlight everything if span mismatch
       return (
-        <span className={cls} onMouseEnter={handleHover}>
+        <span className={cls} onClick={handleClick} onMouseEnter={handleMouseEnter} onMouseOver={handleMouseEnter} onMouseMove={handleMouseMove} onMouseLeave={handleMouseLeave}>
           {text}
         </span>
       );
@@ -380,7 +440,7 @@ function ToolMain() {
     return (
       <>
         {text.slice(0, idx)}
-        <span className={cls} onMouseEnter={handleHover}>
+        <span className={cls} onClick={handleClick} onMouseEnter={handleMouseEnter} onMouseOver={handleMouseEnter} onMouseMove={handleMouseMove} onMouseLeave={handleMouseLeave}>
           {span}
         </span>
         {text.slice(idx + span.length)}
@@ -390,11 +450,6 @@ function ToolMain() {
 
   const generateCode = () =>
     `MTURK-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
-
-  // Close the review panel when moving to a new paragraph
-  useEffect(() => {
-    setReviewOpen(false);
-  }, [currentParagraphIndex]);
 
   useEffect(() => {
     if (!showThankYou) return;
@@ -727,7 +782,7 @@ function ToolMain() {
             </h2>
             <CardContent>
               <p className="text-gray-700 mb-4">
-                {renderParagraph(paragraphs[currentParagraphIndex], llmForCurrent?.span)}
+                {renderParagraph(paragraphs[currentParagraphIndex], llmForCurrent?.span, llmForCurrent?.subcategory)}
               </p>
 
               {readyToSubmit && (
@@ -743,6 +798,60 @@ function ToolMain() {
             </CardContent>
           </Card>
         )}
+
+        {/* Popup */}
+        {showPopup && llmForCurrent && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+            <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full text-center animate-fadeIn">
+              <h2 className="text-2xl font-bold mb-3 text-gray-900">Verify LLM Annotation</h2>
+
+              <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 text-left mb-4">
+                <p className="text-xs text-gray-500 mb-1 font-semibold">Highlighted text</p>
+                <p className="text-sm text-gray-800 break-words">“{llmForCurrent.span}”</p>
+              </div>
+
+              <p className="text-sm text-gray-700 mb-6 leading-relaxed">
+                The LLM labeled this highlight as <strong>{llmForCurrent.subcategory}</strong>.
+                Please confirm whether you agree.
+              </p>
+
+
+{getSubcategoryDefinition(llmForCurrent.subcategory) && (
+  <div className="border border-gray-200 rounded-lg p-4 text-left mb-5 bg-gray-50">
+    <p className="text-xs text-gray-500 mb-1 font-semibold capitalize">Definition of {llmForCurrent.subcategory}</p>
+    <p className="text-sm text-gray-800 leading-relaxed">
+      {getSubcategoryDefinition(llmForCurrent.subcategory)}
+    </p>
+  </div>
+)}
+
+              <div className="flex justify-center space-x-4">
+                <Button
+                  onClick={() => submitVote("deny")}
+                  className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded"
+                >
+                  Deny
+                </Button>
+                <Button
+                  onClick={() => submitVote("accept")}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded"
+                >
+                  Accept
+                </Button>
+              </div>
+
+<div className="mt-3 flex justify-center">
+  <Button
+    onClick={() => setShowPopup(false)}
+    className="bg-gray-400 hover:bg-gray-500 text-white px-3 py-1 rounded text-xs"
+  >
+    Back to paragraph
+  </Button>
+</div>
+
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Instructions Panel on Right (ORIGINAL) */}
@@ -753,79 +862,55 @@ function ToolMain() {
             : "invisible opacity-0 pointer-events-none"
         }`}
       >
-        {reviewOpen && llmForCurrent ? (
-          <div className="bg-white rounded-2xl shadow-2xl p-6 w-full text-center">
-            <h2 className="text-2xl font-bold mb-3 text-gray-900">Verify LLM Annotation</h2>
+        <h3 className="text-lg font-bold mb-3">Instructions</h3>
+        <p className="text-sm ml-3 text-left">
+          You will verify <strong>1 news article</strong>. Please follow these
+          steps for each paragraph:
+        </p>
+        <div className="h-4 text-left" />
+        <div className="h-4 text-left" />
+        <ul className="list-decimal text-left ml-5 list-inside text-sm space-y-1">
+          <li>
+            <strong>Read the paragraph</strong> shown on the screen.
+          </li>
+          <div className="h-3" />
+          <li>
+            <strong>Click the highlighted text</strong> to view the LLM's
+            subcategory label.
+          </li>
+          <div className="h-3" />
+          <li>
+            <strong>Accept</strong> if the label matches the highlighted text,
+            or <strong>Deny</strong> if it does not.
+          </li>
+          <div className="h-3" />
+          <li>
+            After choosing, you will automatically move to the next paragraph.
+          </li>
+        </ul>
+        <div className="h-4" />
+        <p className="text-sm text-gray-500 italic">
+          Your responses help us evaluate how well automated systems detect and
+          label polarizing language.
+        </p>
+      </div>
 
-            <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 text-left mb-4">
-              <p className="text-xs text-gray-500 mb-1 font-semibold">Highlighted text</p>
-              <p className="text-sm text-gray-800 break-words">“{llmForCurrent.span}”</p>
-            </div>
-
-            <p className="text-sm text-gray-700 mb-6 leading-relaxed">
-              The LLM labeled this highlight as <strong>{llmForCurrent.subcategory}</strong>.
-              Please confirm whether you agree.
-            </p>
-
-            <div className="flex justify-center space-x-4">
-              <Button
-                onClick={() => submitVote("deny")}
-                className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded"
-              >
-                Deny
-              </Button>
-              <Button
-                onClick={() => submitVote("accept")}
-                className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded"
-              >
-                Accept
-              </Button>
-            </div>
-
-            <div className="mt-4">
-              <Button
-                onClick={() => setReviewOpen(false)}
-                className="bg-gray-500 hover:bg-gray-300 text-gray-700 px-3 py-1 rounded text-xs"
-              >
-                Go Back To Instructions
-              </Button>
-            </div>
-          </div>
-        ) : (
-          <>
-            <h3 className="text-lg font-bold mb-3">Instructions</h3>
-            <p className="text-sm ml-3 text-left">
-              You will verify <strong>1 news article</strong>. Please follow these
-              steps for each paragraph:
-            </p>
-            <div className="h-4 text-left" />
-            <div className="h-4 text-left" />
-            <ul className="list-decimal text-left ml-5 list-inside text-sm space-y-1">
-              <li>
-                <strong>Read the paragraph</strong> shown on the screen.
-              </li>
-              <div className="h-3" />
-              <li>
-                <strong>Hover over the highlighted text</strong> to view the LLM&apos;s
-                subcategory label.
-              </li>
-              <div className="h-3" />
-              <li>
-                <strong>Accept</strong> if the label matches the highlighted text,
-                or <strong>Deny</strong> if it does not.
-              </li>
-              <div className="h-3" />
-              <li>
-                After choosing, you will automatically move to the next paragraph.
-              </li>
-            </ul>
-            <div className="h-4" />
-            <p className="text-sm text-gray-500 italic">
-              Your responses help us evaluate how well automated systems detect and
-              label polarizing language.
-            </p>
-          </>
-        )}      </div>
+      {/* Hover tooltip that follows cursor over highlighted span */}
+      {hoverTooltip.visible && (
+        <div
+          style={{
+            position: "fixed",
+            left: hoverTooltip.x + 12,
+            top: hoverTooltip.y + 12,
+            zIndex: 9999,
+            pointerEvents: "none",
+          }}
+          className="bg-gray-900 text-white text-xs px-3 py-2 rounded shadow-lg max-w-xs"
+        >
+          <div className="font-semibold">LLM label</div>
+          <div className="capitalize">{hoverTooltip.label}</div>
+        </div>
+      )}
 
       {/* Sticky Selected Text & Word Count (ORIGINAL, but unused in verification) */}
       {(selectedText || wordCount > 0) && (
@@ -838,7 +923,10 @@ function ToolMain() {
           {wordCount > 0 && (
             <p className="text-xs text-green-600">Word Count: {wordCount}</p>
           )}
-        </div>
+        
+      
+
+</div>
       )}
     </div>
   );
