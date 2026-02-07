@@ -308,6 +308,14 @@ function ToolMain() {
   // Hover tooltip for quick label preview (follows cursor)
   const [hoverTooltip, setHoverTooltip] = useState({ visible: false, x: 0, y: 0, label: "" });
 
+  // --- Post-verification survey (shown after all paragraphs are accepted/denied) ---
+  const [showSurvey, setShowSurvey] = useState(false);
+  const [surveyQ1, setSurveyQ1] = useState(null); // confidence in polarizing language (1-5)
+  const [surveyQ2, setSurveyQ2] = useState(null); // perceived bias (1-5)
+  const [surveyQ3, setSurveyQ3] = useState("");   // free response (min 100 chars)
+  const [surveyFinished, setSurveyFinished] = useState(false);
+  const [surveyError, setSurveyError] = useState("");
+
 
   const currentArticle = articles[currentArticleIndex];
   const paragraphs = currentArticle ? paragraphAdd(currentArticle.content) : [];
@@ -350,6 +358,14 @@ function ToolMain() {
     setReadyToSubmit(false);
     setCompletedCount(0);
 
+    // Reset survey state for the new article
+    setShowSurvey(false);
+    setSurveyFinished(false);
+    setSurveyQ1(null);
+    setSurveyQ2(null);
+    setSurveyQ3("");
+    setSurveyError("");
+
     const llmRef = ref(database, `LLMAnnotations/${selectedIdx}`);
     get(llmRef).then((snap) => {
       if (snap.exists()) setLlmAnnotations(snap.val());
@@ -372,8 +388,9 @@ function ToolMain() {
     setCompletedCount((prev) => {
       const next = prev + 1;
       if (next >= paragraphs.length) {
-        // Finished verifying every paragraph – show Submit button
+        // Finished verifying every paragraph – show post-annotation survey
         setReadyToSubmit(true);
+        setShowSurvey(true);
       }
       return next;
     });
@@ -451,13 +468,50 @@ function ToolMain() {
   const generateCode = () =>
     `MTURK-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
 
+  const handleFinalSubmit = async () => {
+    const ok = !!surveyQ1 && !!surveyQ2 && (surveyQ3 || "").trim().length >= 100;
+    if (!ok) {
+      setSurveyError("Please answer all questions. Question 3 must be at least 100 characters.");
+      return;
+    }
+
+    try {
+      const code = generateCode();
+      setCompletionCode(code);
+
+      const ts = Date.now();
+      const articleKey = selectedIdx !== null ? String(selectedIdx) : "unknown";
+
+      const submissionPayload = {
+        articleTitles: {
+          [articleKey]: currentArticle?.title || "",
+        },
+        code,
+        surveyResponses: {
+          [articleKey]: {
+            bias: surveyQ2,
+            confidence: surveyQ1,
+            openFeedback: (surveyQ3 || "").trim(),
+          },
+        },
+        timestamp: ts,
+      };
+
+      await push(ref(database, "submissions"), submissionPayload);
+
+      setSurveyFinished(true);
+      setSurveyError("");
+      setShowThankYou(true);
+    } catch (e) {
+      setSurveyError("We could not save your responses. Please try again.");
+    }
+  };
+
+
   useEffect(() => {
     if (!showThankYou) return;
 
-    const code = generateCode();
-    setCompletionCode(code);
-
-
+    // Completion code is generated at final submit time to ensure it is stored alongside the submission.
     // Mirror original end-of-task bookkeeping
     if (selectedIdx !== null) {
       logArticleUsage(selectedIdx).catch(() => {});
@@ -784,22 +838,117 @@ function ToolMain() {
               <p className="text-gray-700 mb-4">
                 {renderParagraph(paragraphs[currentParagraphIndex], llmForCurrent?.span, llmForCurrent?.subcategory)}
               </p>
+              {/* Post-Annotation Survey (appears after all paragraphs are verified) */}
+              {showSurvey && readyToSubmit && (
+                <div className="mt-6 border-t border-gray-200 pt-5 text-left">
+                  <h3 className="text-xl font-bold mb-4 text-gray-900">Post-Annotation Survey</h3>
 
-              {readyToSubmit && (
-                <div className="mt-6">
-                  <Button
-                    onClick={() => setShowThankYou(true)}
-                    className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded"
-                  >
-                    Submit
-                  </Button>
+                  <div className="space-y-6">
+                    <div>
+                      <p className="font-semibold mb-2 text-gray-800">
+                        1. How confident are you that there is polarizing language (either persuasive propaganda or inflammatory language) in this article?
+                      </p>
+                      <div className="space-y-2">
+                        {[1, 2, 3, 4, 5].map((v) => (
+                          <label key={`q1-${v}`} className="flex items-center space-x-2 text-sm text-gray-800">
+                            <input
+                              type="radio"
+                              name="surveyQ1"
+                              value={v}
+                              checked={surveyQ1 === v}
+                              onChange={() => { setSurveyQ1(v); setSurveyError(""); }}
+                              disabled={surveyFinished}
+                            />
+                            <span>
+                              {v} — {
+                                v === 1 ? "Not at all confident that there is polarizing language" :
+                                v === 2 ? "Slightly confident that there is polarizing language" :
+                                v === 3 ? "Moderately confident that there is polarizing language" :
+                                v === 4 ? "Very confident that there is polarizing language" :
+                                          "Extremely confident that there is polarizing language"
+                              }
+                            </span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div>
+                      <p className="font-semibold mb-2 text-gray-800">
+                        2. To what extent does this article seem biased, one-sided, or misleading in how it presents information?
+                      </p>
+                      <div className="space-y-2">
+                        {[1, 2, 3, 4, 5].map((v) => (
+                          <label key={`q2-${v}`} className="flex items-center space-x-2 text-sm text-gray-800">
+                            <input
+                              type="radio"
+                              name="surveyQ2"
+                              value={v}
+                              checked={surveyQ2 === v}
+                              onChange={() => { setSurveyQ2(v); setSurveyError(""); }}
+                              disabled={surveyFinished}
+                            />
+                            <span>
+                              {v} — {
+                                v === 1 ? "Not at all biased" :
+                                v === 2 ? "Slightly biased" :
+                                v === 3 ? "Moderately biased" :
+                                v === 4 ? "Very biased" :
+                                          "Extremely biased"
+                              }
+                            </span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div>
+                      <p className="font-semibold mb-2 text-gray-800">
+                        3. Why did you answer this way? What specific phrases, tone choices, or examples made it stand out to you?
+                        You might reference particular sentences, framing choices, or emotional wording that influenced your decision.
+                      </p>
+                      <textarea
+                        className="w-full min-h-[140px] border border-gray-300 rounded p-3 text-sm text-gray-800"
+                        value={surveyQ3}
+                        onChange={(e) => { setSurveyQ3(e.target.value); setSurveyError(""); }}
+                        placeholder='For example: "I answered this way because the article repeatedly framed one side as unreasonable without providing evidence."'
+                        disabled={surveyFinished}
+                      />
+                      <p className="text-xs text-gray-500 mt-1">
+                        Character count: {surveyQ3.length} (minimum 100 characters)
+                      </p>
+                    </div>
+
+                    {surveyError && (
+                      <div className="text-sm text-red-600 font-semibold">
+                        {surveyError}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="mt-6 flex flex-col items-start space-y-3">
+                    <div className="flex flex-col items-start space-y-2">
+                    {surveyError && (
+                      <div className="text-sm text-red-600">{surveyError}</div>
+                    )}
+                    <Button
+                      onClick={handleFinalSubmit}
+                      className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded"
+                    >
+                      Submit
+                    </Button>
+                  </div>
+                  </div>
                 </div>
               )}
+
             </CardContent>
           </Card>
         )}
 
-        {/* Popup */}
+        
+
+{/* Popup */}
         {showPopup && llmForCurrent && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
             <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full text-center animate-fadeIn">
