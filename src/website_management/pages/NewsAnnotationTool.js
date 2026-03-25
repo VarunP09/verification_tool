@@ -398,11 +398,12 @@ function ToolMain() {
       const subcategory = (ann?.subcategory || "").toString();
       const meta = (ann?.meta || "").toString();
       const annotationKey = ann?.annotationKey ?? String(index);
-      const normalizedSpan = !span || span === "no polarizing language selected" ? text : span;
-      const start = !span || span === "no polarizing language selected" ? 0 : text.indexOf(span);
+      const isNoPolarizingLanguage = !span || span === "no polarizing language selected";
+      const normalizedSpan = isNoPolarizingLanguage ? text : span;
+      const start = isNoPolarizingLanguage ? 0 : text.indexOf(span);
       const safeStart = start >= 0 ? start : 0;
-      const end = !span || span === "no polarizing language selected" ? text.length : (start >= 0 ? start + span.length : text.length);
-      const groupKey = `${safeStart}|||${end}|||${subcategory.toLowerCase()}|||${normalizedSpan}`;
+      const end = isNoPolarizingLanguage ? text.length : (start >= 0 ? start + span.length : text.length);
+      const groupKey = `${safeStart}|||${end}|||${subcategory.toLowerCase()}|||${normalizedSpan}|||${isNoPolarizingLanguage ? "title" : "paragraph"}`;
 
       if (!grouped.has(groupKey)) {
         grouped.set(groupKey, {
@@ -414,6 +415,7 @@ function ToolMain() {
           start: safeStart,
           end,
           exactDuplicate: true,
+          isNoPolarizingLanguage,
         });
       } else {
         const existing = grouped.get(groupKey);
@@ -492,7 +494,7 @@ function ToolMain() {
   /* -------- Highlight renderer -------- */
   function renderParagraph(text, paragraphIndex) {
     const annotations = getParagraphAnnotations(paragraphIndex, text);
-    const unreviewedAnnotations = annotations.filter((ann) => !isAnnotationReviewed(paragraphIndex, ann));
+    const unreviewedAnnotations = annotations.filter((ann) => !ann.isNoPolarizingLanguage && !isAnnotationReviewed(paragraphIndex, ann));
 
     if (unreviewedAnnotations.length === 0) return text;
 
@@ -594,6 +596,76 @@ function ToolMain() {
         </span>
       );
     });
+  }
+
+
+  function renderTitleWithAnnotations(titleText) {
+    const annotations = getParagraphAnnotations(currentParagraphIndex, paragraphs[currentParagraphIndex] || "");
+    const noPolarizingAnnotations = annotations.filter(
+      (ann) => ann.isNoPolarizingLanguage && !isAnnotationReviewed(currentParagraphIndex, ann)
+    );
+
+    if (noPolarizingAnnotations.length === 0) return titleCapitalization(titleText);
+
+    const chosen = [...noPolarizingAnnotations].sort((a, b) => a.start - b.start || a.end - b.end)[0];
+    const sameSpanAndSubcategory =
+      noPolarizingAnnotations.length > 1 &&
+      noPolarizingAnnotations.every(
+        (ann) =>
+          ann.start === chosen.start &&
+          ann.end === chosen.end &&
+          (ann.subcategory || "") === (chosen.subcategory || "")
+      );
+
+    const bgClass = sameSpanAndSubcategory || noPolarizingAnnotations.length === 1 ? "bg-yellow-200" : "bg-orange-300";
+
+    const hoverMeta = sameSpanAndSubcategory
+      ? Array.from(new Set(noPolarizingAnnotations.flatMap((ann) => ann.metas || []).filter(Boolean))).join(", ")
+      : chosen.meta;
+
+    const hoverLabel = chosen.subcategory || "Unknown";
+
+    const handleClick = () => {
+      setHoverTooltip((prev) => ({ ...prev, visible: false }));
+      setSelectedAnnotation({
+        ...chosen,
+        meta: hoverMeta || chosen.meta,
+      });
+      setShowPopup(true);
+    };
+
+    const handleMouseEnter = (e) => {
+      setHoverTooltip({
+        visible: true,
+        x: e.clientX,
+        y: e.clientY,
+        label: hoverLabel,
+        meta: hoverMeta || chosen.meta || "",
+      });
+    };
+
+    const handleMouseMove = (e) => {
+      setHoverTooltip((prev) =>
+        prev.visible ? { ...prev, x: e.clientX, y: e.clientY } : prev
+      );
+    };
+
+    const handleMouseLeave = () => {
+      setHoverTooltip((prev) => ({ ...prev, visible: false }));
+    };
+
+    return (
+      <span
+        className={`${bgClass} cursor-pointer`}
+        onClick={handleClick}
+        onMouseEnter={handleMouseEnter}
+        onMouseOver={handleMouseEnter}
+        onMouseMove={handleMouseMove}
+        onMouseLeave={handleMouseLeave}
+      >
+        {titleCapitalization(titleText)}
+      </span>
+    );
   }
 
   const generateCode = () =>
@@ -1010,7 +1082,7 @@ function ToolMain() {
         {articles.length > 0 && articleAssigned && (
           <Card>
             <h2 className="text-xl font-bold text-gray-900 mb-2">
-              {titleCapitalization(articles[currentArticleIndex]?.title)}
+              {renderTitleWithAnnotations(articles[currentArticleIndex]?.title || "")}
             </h2>
             <CardContent>
               <p className="text-gray-700 mb-4">
@@ -1149,7 +1221,7 @@ function ToolMain() {
 
               <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 text-left mb-4">
                 <p className="text-xs text-gray-500 mb-1 font-semibold">Highlighted text</p>
-                <p className="text-sm text-gray-800 break-words">“{selectedAnnotation.span}”</p>
+                <p className="text-sm text-gray-800 break-words">“{String(selectedAnnotation.subcategory || "").toLowerCase() === "no polarizing language" ? "no polarizing language selected" : selectedAnnotation.span}”</p>
               </div>
 
               <p className="text-sm text-gray-700 mb-6 leading-relaxed">
