@@ -20,6 +20,8 @@ function IntroScreen({ onDone }) {
   const videoRef = useRef(null);
   const watchedSecondsRef = useRef(new Set());
 
+
+
   const handleTimeUpdate = () => {
     const v = videoRef.current;
     if (!v) return;
@@ -142,17 +144,19 @@ function titleCapitalization(title) {
 ------------------------------ */
 
 const MAX_PER_ARTICLE = 3;
-const TOTAL_ARTICLES = 12;
+const TOTAL_ARTICLES = 27;
 
-async function tryAssignIndex(i) {
-  const idxRef = ref(database, `articleUsage/${i}`);
-  const result = await runTransaction(idxRef, (curr) => {
-    const v = curr ?? 0;
-    if (v >= MAX_PER_ARTICLE) return;
-    return v + 1;
-  });
-  return result.committed;
-}
+
+
+// async function tryAssignIndex(i) {
+//   const idxRef = ref(database, `articleUsage/${i}`);
+//   const result = await runTransaction(idxRef, (curr) => {
+//     const v = curr ?? 0;
+//     if (v >= MAX_PER_ARTICLE) return;
+//     return v + 1;
+//   });
+//   return result.committed;
+// }
 
 /* -----------------------------
    Original DropdownItem (kept as-is)
@@ -267,8 +271,10 @@ function ToolMain() {
 
   const [llmAnnotations, setLlmAnnotations] = useState({});
   const [showPopup, setShowPopup] = useState(false);
+  const [selectedAnnotation, setSelectedAnnotation] = useState(null);
+  const [reviewedAnnotations, setReviewedAnnotations] = useState({});
   // Hover tooltip for quick label preview (follows cursor)
-  const [hoverTooltip, setHoverTooltip] = useState({ visible: false, x: 0, y: 0, label: "" });
+  const [hoverTooltip, setHoverTooltip] = useState({ visible: false, x: 0, y: 0, label: "", meta: "" });
 
   // --- Post-verification survey (shown after all paragraphs are accepted/denied) ---
   const [showSurvey, setShowSurvey] = useState(false);
@@ -285,7 +291,7 @@ function ToolMain() {
 
   /* -------- Load articles only -------- */
   useEffect(() => {
-    fetch("/article_dataset_versions/test3_encoding_fixed_300_700_words.csv")
+    fetch("/article_dataset_versions/27Articles.csv")
       .then((response) => response.text())
       .then(async (csvText) => {
         Papa.parse(csvText, {
@@ -308,13 +314,13 @@ function ToolMain() {
     const trimmed = articleInput.toString().trim();
 
     if (trimmed === "") {
-      setArticleSelectError("Please enter an articleIndex from 0 to 11.");
+      setArticleSelectError("Please enter an articleIndex from 0 to 26.");
       return;
     }
 
     const idx = Number(trimmed);
     if (!Number.isInteger(idx) || idx < 0 || idx >= TOTAL_ARTICLES) {
-      setArticleSelectError("articleIndex must be a whole number from 0 to 11.");
+      setArticleSelectError("articleIndex must be a whole number from 0 to 26.");
       return;
     }
 
@@ -323,11 +329,11 @@ function ToolMain() {
       return;
     }
 
-    const assigned = await tryAssignIndex(idx);
-    if (!assigned) {
-      setArticleSelectError("That article has already reached the maximum number of responses. Please choose another articleIndex.");
-      return;
-    }
+    //const assigned = await tryAssignIndex(idx);
+    // if (!assigned) {
+    //   setArticleSelectError("That article has already reached the maximum number of responses. Please choose another articleIndex.");
+    //   return;
+    // }
 
     setArticleSelectError("");
     setSelectedIdx(idx);
@@ -344,6 +350,8 @@ function ToolMain() {
     setCurrentParagraphIndex(0);
     setReadyToSubmit(false);
     setCompletedCount(0);
+    setSelectedAnnotation(null);
+    setReviewedAnnotations({});
 
     // Reset survey state for the new article
     setShowSurvey(false);
@@ -354,103 +362,238 @@ function ToolMain() {
     setSurveyQ4("");
     setSurveyError("");
 
-    const llmRef = ref(database, `LLMAnnotations/${selectedIdx}`);
+    const llmRef = ref(database, `InHouse-Annotations/${selectedIdx}`);
     get(llmRef).then((snap) => {
       if (snap.exists()) setLlmAnnotations(snap.val());
       else setLlmAnnotations({});
     });
   }, [selectedIdx]);
 
-  /* -------- Voting logic -------- */
-  async function submitVote(type) {
-    const voteRef = ref(
-      database,
-      `LLMAnnotations/${selectedIdx}/${currentParagraphIndex}/${type}`
-    );
-    await runTransaction(voteRef, (curr) => (curr ?? 0) + 1);
+  function getRawAnnotationsForParagraph(paragraphIndex) {
+    const raw = llmAnnotations?.[paragraphIndex];
 
-    setShowPopup(false);
-    setHoverTooltip((prev) => ({ ...prev, visible: false }));
+    if (Array.isArray(raw)) return raw.filter(Boolean);
 
-    // Mark this paragraph as completed (exactly 1 vote per paragraph)
-    setCompletedCount((prev) => {
-      const next = prev + 1;
-      if (next >= paragraphs.length) {
-        // Finished verifying every paragraph – show post-annotation survey
-        setReadyToSubmit(true);
-        setShowSurvey(true);
+    if (raw && typeof raw === "object") {
+      if ("span" in raw || "subcategory" in raw) return [raw];
+
+      return Object.keys(raw)
+        .sort((a, b) => Number(a) - Number(b))
+        .map((key) => ({
+          annotationKey: key,
+          ...(raw[key] || {}),
+        }))
+        .filter((item) => item && (item.span !== undefined || item.subcategory !== undefined));
+    }
+
+    return [];
+  }
+
+  function getParagraphAnnotations(paragraphIndex, text) {
+    const rawAnnotations = getRawAnnotationsForParagraph(paragraphIndex);
+    const grouped = new Map();
+
+    rawAnnotations.forEach((ann, index) => {
+      const span = (ann?.span || "").toString();
+      const subcategory = (ann?.subcategory || "").toString();
+      const meta = (ann?.meta || "").toString();
+      const annotationKey = ann?.annotationKey ?? String(index);
+      const normalizedSpan = !span || span === "no polarizing language selected" ? text : span;
+      const start = !span || span === "no polarizing language selected" ? 0 : text.indexOf(span);
+      const safeStart = start >= 0 ? start : 0;
+      const end = !span || span === "no polarizing language selected" ? text.length : (start >= 0 ? start + span.length : text.length);
+      const groupKey = `${safeStart}|||${end}|||${subcategory.toLowerCase()}|||${normalizedSpan}`;
+
+      if (!grouped.has(groupKey)) {
+        grouped.set(groupKey, {
+          annotationKeys: [annotationKey],
+          metas: meta ? [meta] : [],
+          meta: meta || "",
+          subcategory,
+          span: normalizedSpan,
+          start: safeStart,
+          end,
+          exactDuplicate: true,
+        });
+      } else {
+        const existing = grouped.get(groupKey);
+        existing.annotationKeys.push(annotationKey);
+        if (meta && !existing.metas.includes(meta)) existing.metas.push(meta);
+        existing.meta = existing.metas.join(", ");
       }
-      return next;
     });
 
-    // Only advance if there is a next paragraph
-    if (currentParagraphIndex < paragraphs.length - 1) {
-      setCurrentParagraphIndex((p) => p + 1);
+    const merged = Array.from(grouped.values())
+      .map((ann) => ({
+        ...ann,
+        label: ann.subcategory || "Unknown",
+      }))
+      .sort((a, b) => a.start - b.start || a.end - b.end);
+
+    return merged;
+  }
+
+  function isAnnotationReviewed(paragraphIndex, annotation) {
+    return (annotation.annotationKeys || []).every((key) => reviewedAnnotations[`${paragraphIndex}:${key}`]);
+  }
+
+  function getNextParagraphIndex(startIndex) {
+    for (let i = startIndex; i < paragraphs.length; i++) {
+      const anns = getParagraphAnnotations(i, paragraphs[i] || "");
+      const hasUnreviewed = anns.some((ann) => !isAnnotationReviewed(i, ann));
+      if (hasUnreviewed) return i;
+    }
+    return -1;
+  }
+
+  /* -------- Voting logic -------- */
+  async function submitVote(type) {
+    if (!selectedAnnotation) return;
+
+    const annotationKeys = selectedAnnotation.annotationKeys || [];
+
+    await Promise.all(
+      annotationKeys.map((annotationKey) => {
+        const voteRef = ref(
+          database,
+          `InHouse-Annotations/${selectedIdx}/${currentParagraphIndex}/${annotationKey}/${type}`
+        );
+        return runTransaction(voteRef, (curr) => (curr ?? 0) + 1);
+      })
+    );
+
+    const updatedReviewed = { ...reviewedAnnotations };
+    annotationKeys.forEach((annotationKey) => {
+      updatedReviewed[`${currentParagraphIndex}:${annotationKey}`] = true;
+    });
+
+    setReviewedAnnotations(updatedReviewed);
+    setShowPopup(false);
+    setSelectedAnnotation(null);
+    setHoverTooltip((prev) => ({ ...prev, visible: false }));
+
+    const currentAnnotations = getParagraphAnnotations(currentParagraphIndex, paragraphs[currentParagraphIndex] || "");
+    const hasRemainingInCurrent = currentAnnotations.some((ann) => {
+      const keys = ann.annotationKeys || [];
+      return keys.some((key) => !updatedReviewed[`${currentParagraphIndex}:${key}`]);
+    });
+
+    if (hasRemainingInCurrent) return;
+
+    const nextParagraph = getNextParagraphIndex(currentParagraphIndex + 1);
+    if (nextParagraph === -1) {
+      setReadyToSubmit(true);
+      setShowSurvey(true);
+    } else {
+      setCurrentParagraphIndex(nextParagraph);
     }
   }
 
   /* -------- Highlight renderer -------- */
-  function renderParagraph(text, span, subcategoryLabel) {
-    const disabled = readyToSubmit;
-    const handleClick = () => {
-      if (!disabled) {
-        setHoverTooltip((prev) => ({ ...prev, visible: false }));
-        setShowPopup(true);
+  function renderParagraph(text, paragraphIndex) {
+    const annotations = getParagraphAnnotations(paragraphIndex, text);
+    const unreviewedAnnotations = annotations.filter((ann) => !isAnnotationReviewed(paragraphIndex, ann));
+
+    if (unreviewedAnnotations.length === 0) return text;
+
+    const boundaries = new Set([0, text.length]);
+    unreviewedAnnotations.forEach((ann) => {
+      boundaries.add(Math.max(0, Math.min(text.length, ann.start)));
+      boundaries.add(Math.max(0, Math.min(text.length, ann.end)));
+    });
+
+    const sortedPoints = Array.from(boundaries).sort((a, b) => a - b);
+    const segments = [];
+
+    for (let i = 0; i < sortedPoints.length - 1; i++) {
+      const start = sortedPoints[i];
+      const end = sortedPoints[i + 1];
+      if (start === end) continue;
+
+      const covering = unreviewedAnnotations.filter((ann) => ann.start < end && ann.end > start);
+      segments.push({
+        start,
+        end,
+        text: text.slice(start, end),
+        covering,
+      });
+    }
+
+    const chooseAnnotationForSegment = (covering) => {
+      if (!covering.length) return null;
+      return [...covering].sort((a, b) => a.start - b.start || a.end - b.end)[0];
+    };
+
+    return segments.map((segment, idx) => {
+      if (!segment.covering.length) {
+        return <React.Fragment key={`seg-${idx}`}>{segment.text}</React.Fragment>;
       }
-    };
 
+      const chosen = chooseAnnotationForSegment(segment.covering);
+      if (!chosen) return <React.Fragment key={`seg-${idx}`}>{segment.text}</React.Fragment>;
 
-    const labelForTooltip = (subcategoryLabel || "").toString().trim() || "Unknown";
+      const sameSpanAndSubcategory =
+        segment.covering.length > 1 &&
+        segment.covering.every(
+          (ann) =>
+            ann.start === chosen.start &&
+            ann.end === chosen.end &&
+            (ann.subcategory || "") === (chosen.subcategory || "")
+        );
 
-    const handleMouseEnter = (e) => {
-      if (disabled) return;
-      setHoverTooltip({ visible: true, x: e.clientX, y: e.clientY, label: labelForTooltip });
-    };
+      const bgClass = sameSpanAndSubcategory || segment.covering.length === 1 ? "bg-yellow-200" : "bg-orange-300";
 
-    const handleMouseMove = (e) => {
-      if (disabled) return;
-      setHoverTooltip((prev) =>
-        prev.visible ? { ...prev, x: e.clientX, y: e.clientY } : prev
-      );
-    };
+      const hoverMeta = sameSpanAndSubcategory
+        ? Array.from(new Set(segment.covering.flatMap((ann) => ann.metas || []).filter(Boolean))).join(", ")
+        : chosen.meta;
 
-    const handleMouseLeave = () => {
-      setHoverTooltip((prev) => ({ ...prev, visible: false }));
-    };
+      const hoverLabel = chosen.subcategory || "Unknown";
 
+      const handleClick = () => {
+        setHoverTooltip((prev) => ({ ...prev, visible: false }));
+        setSelectedAnnotation({
+          ...chosen,
+          meta: hoverMeta || chosen.meta,
+        });
+        setShowPopup(true);
+      };
 
-    const cls = disabled
-      ? "bg-yellow-200 opacity-60 cursor-not-allowed"
-      : "bg-yellow-200 cursor-pointer";
+      const handleMouseEnter = (e) => {
+        setHoverTooltip({
+          visible: true,
+          x: e.clientX,
+          y: e.clientY,
+          label: hoverLabel,
+          meta: hoverMeta || chosen.meta || "",
+        });
+      };
 
-    // No polarizing language: highlight entire paragraph
-    if (!span || span === "no polarizing language selected") {
+      const handleMouseMove = (e) => {
+        setHoverTooltip((prev) =>
+          prev.visible
+            ? { ...prev, x: e.clientX, y: e.clientY }
+            : prev
+        );
+      };
+
+      const handleMouseLeave = () => {
+        setHoverTooltip((prev) => ({ ...prev, visible: false }));
+      };
+
       return (
-        <span className={cls} onClick={handleClick} onMouseEnter={handleMouseEnter} onMouseOver={handleMouseEnter} onMouseMove={handleMouseMove} onMouseLeave={handleMouseLeave}>
-          {text}
+        <span
+          key={`seg-${idx}`}
+          className={`${bgClass} cursor-pointer`}
+          onClick={handleClick}
+          onMouseEnter={handleMouseEnter}
+          onMouseOver={handleMouseEnter}
+          onMouseMove={handleMouseMove}
+          onMouseLeave={handleMouseLeave}
+        >
+          {segment.text}
         </span>
       );
-    }
-
-    const idx = text.indexOf(span);
-    if (idx === -1) {
-      // Fallback: highlight everything if span mismatch
-      return (
-        <span className={cls} onClick={handleClick} onMouseEnter={handleMouseEnter} onMouseOver={handleMouseEnter} onMouseMove={handleMouseMove} onMouseLeave={handleMouseLeave}>
-          {text}
-        </span>
-      );
-    }
-
-    return (
-      <>
-        {text.slice(0, idx)}
-        <span className={cls} onClick={handleClick} onMouseEnter={handleMouseEnter} onMouseOver={handleMouseEnter} onMouseMove={handleMouseMove} onMouseLeave={handleMouseLeave}>
-          {span}
-        </span>
-        {text.slice(idx + span.length)}
-      </>
-    );
+    });
   }
 
   const generateCode = () =>
@@ -486,7 +629,7 @@ function ToolMain() {
         timestamp: ts,
       };
 
-      await push(ref(database, "submissions"), submissionPayload);
+      await push(ref(database, "InHouse-Submissions"), submissionPayload);
 
       setSurveyFinished(true);
       setSurveyError("");
@@ -503,8 +646,27 @@ function ToolMain() {
     // Completion code is generated at final submit time to ensure it is stored alongside the submission.
   }, [showThankYou]);
 
-  if (taskClosed) return <TaskClosedScreen />;
 
+
+
+
+  const currentParagraphAnnotations = getParagraphAnnotations(currentParagraphIndex, paragraphs[currentParagraphIndex] || "");
+
+  useEffect(() => {
+    if (!articleAssigned || readyToSubmit || paragraphs.length === 0) return;
+    const currentHasUnreviewed = currentParagraphAnnotations.some((ann) => !isAnnotationReviewed(currentParagraphIndex, ann));
+    if (currentHasUnreviewed) return;
+
+    const nextParagraph = getNextParagraphIndex(currentParagraphIndex + 1);
+    if (nextParagraph === -1) {
+      setReadyToSubmit(true);
+      setShowSurvey(true);
+    } else if (nextParagraph !== currentParagraphIndex) {
+      setCurrentParagraphIndex(nextParagraph);
+    }
+  }, [articleAssigned, currentParagraphIndex, readyToSubmit, paragraphs.length, llmAnnotations, reviewedAnnotations]);
+
+  if (taskClosed) return <TaskClosedScreen />;
   if (showThankYou) {
     return (
       <div className="w-full h-screen flex items-center justify-center bg-white">
@@ -526,9 +688,6 @@ function ToolMain() {
       </div>
     );
   }
-
-  const llmForCurrent = llmAnnotations[currentParagraphIndex];
-
   return (
     <div className="flex w-full justify-center items-start min-h-screen bg-gray-100 relative">
 
@@ -819,7 +978,7 @@ function ToolMain() {
               <div className="text-left">
                 <h2 className="text-xl font-bold text-gray-900 mb-3">Choose an article</h2>
                 <p className="text-gray-700 mb-4">
-                  Enter the <strong>articleIndex</strong> you want to verify from <strong>0 to 11</strong>.
+                  Enter the <strong>articleIndex</strong> you want to verify from <strong>0 to 26</strong>.
                 </p>
                 <input
                   type="number"
@@ -832,7 +991,7 @@ function ToolMain() {
                     setArticleSelectError("");
                   }}
                   className="w-full border border-gray-300 rounded px-3 py-2 mb-3"
-                  placeholder="Enter articleIndex (0-11)"
+                  placeholder="Enter articleIndex (0-26)"
                 />
                 {articleSelectError && (
                   <p className="text-sm text-red-600 mb-3">{articleSelectError}</p>
@@ -855,7 +1014,7 @@ function ToolMain() {
             </h2>
             <CardContent>
               <p className="text-gray-700 mb-4">
-                {renderParagraph(paragraphs[currentParagraphIndex], llmForCurrent?.span, llmForCurrent?.subcategory)}
+                {renderParagraph(paragraphs[currentParagraphIndex], currentParagraphIndex)}
               </p>
               {/* Post-Annotation Survey (appears after all paragraphs are verified) */}
               {showSurvey && readyToSubmit && (
@@ -983,27 +1142,27 @@ function ToolMain() {
         
 
 {/* Popup */}
-        {showPopup && llmForCurrent && (
+        {showPopup && selectedAnnotation && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
             <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full text-center animate-fadeIn">
               <h2 className="text-2xl font-bold mb-3 text-gray-900">Verify LLM Annotation</h2>
 
               <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 text-left mb-4">
                 <p className="text-xs text-gray-500 mb-1 font-semibold">Highlighted text</p>
-                <p className="text-sm text-gray-800 break-words">“{llmForCurrent.span}”</p>
+                <p className="text-sm text-gray-800 break-words">“{selectedAnnotation.span}”</p>
               </div>
 
               <p className="text-sm text-gray-700 mb-6 leading-relaxed">
-                The LLM labeled this highlight as <strong>{llmForCurrent.subcategory}</strong>.
+                <strong>{selectedAnnotation.meta || "Someone"}</strong> annotated this section as <strong>{selectedAnnotation.subcategory}</strong>.
                 Please confirm whether you agree.
               </p>
 
 
-{getSubcategoryDefinition(llmForCurrent.subcategory) && (
+{getSubcategoryDefinition(selectedAnnotation.subcategory) && (
   <div className="border border-gray-200 rounded-lg p-4 text-left mb-5 bg-gray-50">
-    <p className="text-xs text-gray-500 mb-1 font-semibold capitalize">Definition of {llmForCurrent.subcategory}</p>
+    <p className="text-xs text-gray-500 mb-1 font-semibold capitalize">Definition of {selectedAnnotation.subcategory}</p>
     <p className="text-sm text-gray-800 leading-relaxed">
-      {getSubcategoryDefinition(llmForCurrent.subcategory)}
+      {getSubcategoryDefinition(selectedAnnotation.subcategory)}
     </p>
   </div>
 )}
@@ -1090,8 +1249,9 @@ function ToolMain() {
           }}
           className="bg-gray-900 text-white text-xs px-3 py-2 rounded shadow-lg max-w-xs"
         >
-          <div className="font-semibold">LLM label</div>
-          <div className="capitalize">{hoverTooltip.label}</div>
+          <div className="font-semibold">Annotation</div>
+          <div><span className="font-semibold">Category:</span> <span className="capitalize">{hoverTooltip.label}</span></div>
+          <div><span className="font-semibold">Meta:</span> {hoverTooltip.meta}</div>
         </div>
       )}
 
@@ -1120,9 +1280,9 @@ function ToolMain() {
 ------------------------------ */
 
 export default function NewsAnnotationTool() {
-  const [introDone, setIntroDone] = useState(false);
+  //const [introDone, setIntroDone] = useState(false);
 
-  if (!introDone) return <IntroScreen onDone={() => setIntroDone(true)} />;
+  //if (!introDone) return <IntroScreen onDone={() => setIntroDone(true)} />;
 
   return <ToolMain />;
 }
