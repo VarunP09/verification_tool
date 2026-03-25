@@ -245,6 +245,7 @@ const getSubcategoryDefinition = (label) => {
 ------------------------------ */
 
 function ToolMain() {
+  const [annotationsLoaded, setAnnotationsLoaded] = useState(false);
   const [taskClosed, setTaskClosed] = useState(false);
   // --- Original side panel UI state (kept as-is for later editing) ---
   const [openDropdown, setOpenDropdown] = useState(null);
@@ -361,6 +362,8 @@ function ToolMain() {
     setSurveyQ3("");
     setSurveyQ4("");
     setSurveyError("");
+
+    setAnnotationsLoaded(false);
 
     const llmRef = ref(database, `InHouse-Annotations/${selectedIdx}`);
     get(llmRef).then((snap) => {
@@ -725,7 +728,7 @@ function ToolMain() {
   const currentParagraphAnnotations = getParagraphAnnotations(currentParagraphIndex, paragraphs[currentParagraphIndex] || "");
 
   useEffect(() => {
-    if (!articleAssigned || readyToSubmit || paragraphs.length === 0) return;
+    if (!articleAssigned || !annotationsLoaded || readyToSubmit || paragraphs.length === 0) return;
     const currentHasUnreviewed = currentParagraphAnnotations.some((ann) => !isAnnotationReviewed(currentParagraphIndex, ann));
     if (currentHasUnreviewed) return;
 
