@@ -138,61 +138,20 @@ function titleCapitalization(title) {
 }
 
 /* -----------------------------
-   Firebase article claiming
+   Firebase article assignment
 ------------------------------ */
 
 const MAX_PER_ARTICLE = 3;
+const TOTAL_ARTICLES = 12;
 
-async function pickAndClaimIndex() {
-  const usageRef = ref(database, "articleUsage");
-  const claimedRef = ref(database, "claimedArticles");
-
-  const [usageSnap, claimedSnap] = await Promise.all([get(usageRef), get(claimedRef)]);
-  let usage = usageSnap.exists() ? usageSnap.val() : {};
-  let claimed = claimedSnap.exists() ? claimedSnap.val() : {};
-
-  for (let i = 0; i < 12; i++) {
-    if (usage[i] === undefined) usage[i] = 0;
-    if (claimed[i] === undefined) claimed[i] = 0;
-  }
-
-  const candidates = Object.keys(usage)
-    .map(Number)
-    .filter((i) => usage[i] < MAX_PER_ARTICLE && (claimed[i] ?? 0) < MAX_PER_ARTICLE);
-
-  if (candidates.length === 0) return null;
-
-  const shuffled = [...candidates].sort(() => Math.random() - 0.5);
-
-  for (const i of shuffled) {
-    const ok = await tryClaimIndex(i);
-    if (ok) return i;
-  }
-
-  return null;
-}
-
-async function tryClaimIndex(i) {
-  const idxRef = ref(database, `claimedArticles/${i}`);
+async function tryAssignIndex(i) {
+  const idxRef = ref(database, `articleUsage/${i}`);
   const result = await runTransaction(idxRef, (curr) => {
     const v = curr ?? 0;
     if (v >= MAX_PER_ARTICLE) return;
     return v + 1;
   });
   return result.committed;
-}
-
-async function unclaimArticle(i) {
-  const idxRef = ref(database, `claimedArticles/${i}`);
-  await runTransaction(idxRef, (curr) => {
-    const v = curr ?? 0;
-    return v > 0 ? v - 1 : 0;
-  });
-}
-
-async function logArticleUsage(index) {
-  const usageIdxRef = ref(database, `articleUsage/${index}`);
-  await runTransaction(usageIdxRef, (curr) => (curr ?? 0) + 1);
 }
 
 /* -----------------------------
@@ -302,6 +261,9 @@ function ToolMain() {
   const [currentArticleIndex, setCurrentArticleIndex] = useState(0);
   const [currentParagraphIndex, setCurrentParagraphIndex] = useState(0);
   const [selectedIdx, setSelectedIdx] = useState(null);
+  const [articleInput, setArticleInput] = useState("");
+  const [articleSelectError, setArticleSelectError] = useState("");
+  const [articleAssigned, setArticleAssigned] = useState(false);
 
   const [llmAnnotations, setLlmAnnotations] = useState({});
   const [showPopup, setShowPopup] = useState(false);
@@ -321,7 +283,7 @@ function ToolMain() {
   const currentArticle = articles[currentArticleIndex];
   const paragraphs = currentArticle ? paragraphAdd(currentArticle.content) : [];
 
-  /* -------- Load article + claim -------- */
+  /* -------- Load articles only -------- */
   useEffect(() => {
     fetch("/article_dataset_versions/test3_encoding_fixed_300_700_words.csv")
       .then((response) => response.text())
@@ -337,18 +299,42 @@ function ToolMain() {
             }));
 
             setAllArticles(parsedArticles);
-
-            const idx = await pickAndClaimIndex();
-            if (idx !== null) {
-              setSelectedIdx(idx);
-              setArticles([parsedArticles[idx]]);
-            } else {
-              setTaskClosed(true);
-            }
           },
         });
       });
   }, []);
+
+  async function handleArticleSelection() {
+    const trimmed = articleInput.toString().trim();
+
+    if (trimmed === "") {
+      setArticleSelectError("Please enter an articleIndex from 0 to 11.");
+      return;
+    }
+
+    const idx = Number(trimmed);
+    if (!Number.isInteger(idx) || idx < 0 || idx >= TOTAL_ARTICLES) {
+      setArticleSelectError("articleIndex must be a whole number from 0 to 11.");
+      return;
+    }
+
+    if (!allArticles[idx]) {
+      setArticleSelectError("That articleIndex is not available in the dataset.");
+      return;
+    }
+
+    const assigned = await tryAssignIndex(idx);
+    if (!assigned) {
+      setArticleSelectError("That article has already reached the maximum number of responses. Please choose another articleIndex.");
+      return;
+    }
+
+    setArticleSelectError("");
+    setSelectedIdx(idx);
+    setArticles([allArticles[idx]]);
+    setCurrentArticleIndex(0);
+    setArticleAssigned(true);
+  }
 
   /* -------- Load LLMAnnotations for article -------- */
   useEffect(() => {
@@ -515,11 +501,6 @@ function ToolMain() {
     if (!showThankYou) return;
 
     // Completion code is generated at final submit time to ensure it is stored alongside the submission.
-    // Mirror original end-of-task bookkeeping
-    if (selectedIdx !== null) {
-      logArticleUsage(selectedIdx).catch(() => {});
-      unclaimArticle(selectedIdx).catch(() => {});
-    }
   }, [showThankYou]);
 
   if (taskClosed) return <TaskClosedScreen />;
@@ -832,7 +813,42 @@ function ToolMain() {
           {showRightInstructions ? "Hide Instructions" : "Show Instructions"}
         </Button>
 
-        {articles.length > 0 && (
+        {!articleAssigned && (
+          <Card>
+            <CardContent>
+              <div className="text-left">
+                <h2 className="text-xl font-bold text-gray-900 mb-3">Choose an article</h2>
+                <p className="text-gray-700 mb-4">
+                  Enter the <strong>articleIndex</strong> you want to verify from <strong>0 to 11</strong>.
+                </p>
+                <input
+                  type="number"
+                  min="0"
+                  max="11"
+                  step="1"
+                  value={articleInput}
+                  onChange={(e) => {
+                    setArticleInput(e.target.value);
+                    setArticleSelectError("");
+                  }}
+                  className="w-full border border-gray-300 rounded px-3 py-2 mb-3"
+                  placeholder="Enter articleIndex (0-11)"
+                />
+                {articleSelectError && (
+                  <p className="text-sm text-red-600 mb-3">{articleSelectError}</p>
+                )}
+                <Button
+                  onClick={handleArticleSelection}
+                  className="bg-blue-600 hover:bg-blue-700 text-white"
+                >
+                  Load Article
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {articles.length > 0 && articleAssigned && (
           <Card>
             <h2 className="text-xl font-bold text-gray-900 mb-2">
               {titleCapitalization(articles[currentArticleIndex]?.title)}
