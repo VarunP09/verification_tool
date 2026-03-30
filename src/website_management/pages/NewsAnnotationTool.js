@@ -138,43 +138,14 @@ function titleCapitalization(title) {
 }
 
 /* -----------------------------
-   Firebase article claiming
+   Firebase article assignment
 ------------------------------ */
 
 const MAX_PER_ARTICLE = 3;
 
-async function pickAndClaimIndex() {
-  const usageRef = ref(database, "articleUsage");
-  const claimedRef = ref(database, "claimedArticles");
-
-  const [usageSnap, claimedSnap] = await Promise.all([get(usageRef), get(claimedRef)]);
-  let usage = usageSnap.exists() ? usageSnap.val() : {};
-  let claimed = claimedSnap.exists() ? claimedSnap.val() : {};
-
-  for (let i = 0; i < 12; i++) {
-    if (usage[i] === undefined) usage[i] = 0;
-    if (claimed[i] === undefined) claimed[i] = 0;
-  }
-
-  const candidates = Object.keys(usage)
-    .map(Number)
-    .filter((i) => usage[i] < MAX_PER_ARTICLE && (claimed[i] ?? 0) < MAX_PER_ARTICLE);
-
-  if (candidates.length === 0) return null;
-
-  const shuffled = [...candidates].sort(() => Math.random() - 0.5);
-
-  for (const i of shuffled) {
-    const ok = await tryClaimIndex(i);
-    if (ok) return i;
-  }
-
-  return null;
-}
-
-async function tryClaimIndex(i) {
-  const idxRef = ref(database, `claimedArticles/${i}`);
-  const result = await runTransaction(idxRef, (curr) => {
+async function logArticleUsage(index) {
+  const usageIdxRef = ref(database, `articleUsage/${index}`);
+  const result = await runTransaction(usageIdxRef, (curr) => {
     const v = curr ?? 0;
     if (v >= MAX_PER_ARTICLE) return;
     return v + 1;
@@ -182,17 +153,29 @@ async function tryClaimIndex(i) {
   return result.committed;
 }
 
-async function unclaimArticle(i) {
-  const idxRef = ref(database, `claimedArticles/${i}`);
-  await runTransaction(idxRef, (curr) => {
-    const v = curr ?? 0;
-    return v > 0 ? v - 1 : 0;
-  });
-}
+async function assignArticleIndex() {
+  const usageRef = ref(database, "articleUsage");
+  const usageSnap = await get(usageRef);
+  const usage = usageSnap.exists() ? usageSnap.val() : {};
 
-async function logArticleUsage(index) {
-  const usageIdxRef = ref(database, `articleUsage/${index}`);
-  await runTransaction(usageIdxRef, (curr) => (curr ?? 0) + 1);
+  for (let i = 0; i < 12; i++) {
+    if (usage[i] === undefined) usage[i] = 0;
+  }
+
+  const candidates = Object.keys(usage)
+    .map(Number)
+    .filter((i) => usage[i] < MAX_PER_ARTICLE);
+
+  if (candidates.length === 0) return null;
+
+  const shuffled = [...candidates].sort(() => Math.random() - 0.5);
+
+  for (const i of shuffled) {
+    const ok = await logArticleUsage(i);
+    if (ok) return i;
+  }
+
+  return null;
 }
 
 /* -----------------------------
@@ -338,7 +321,7 @@ function ToolMain() {
 
             setAllArticles(parsedArticles);
 
-            const idx = await pickAndClaimIndex();
+            const idx = await assignArticleIndex();
             if (idx !== null) {
               setSelectedIdx(idx);
               setArticles([parsedArticles[idx]]);
@@ -515,11 +498,6 @@ function ToolMain() {
     if (!showThankYou) return;
 
     // Completion code is generated at final submit time to ensure it is stored alongside the submission.
-    // Mirror original end-of-task bookkeeping
-    if (selectedIdx !== null) {
-      logArticleUsage(selectedIdx).catch(() => {});
-      unclaimArticle(selectedIdx).catch(() => {});
-    }
   }, [showThankYou]);
 
   if (taskClosed) return <TaskClosedScreen />;
