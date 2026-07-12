@@ -177,8 +177,43 @@ const getSubcategoryDefinition = (label) => {
 
 const TRAINING_SET_PATH = "/article_dataset_versions/TurkerTrainingSet.json";
 const PASSING_PERCENTAGE = 0.8;
-const SUCCESS_CODE = "9F4w2B8k1P";
-const FAIL_CODE = "8K9w2X4mP1";
+const SUCCESS_CODE = "9Kx4wP2m8Z";
+const FAIL_CODE = "8K9w2F4xM1";
+
+const ATTENTION_CHECKS = [
+  {
+    id: "sport",
+    instruction:
+      "Sport is not just a leisure activity, it is an essential part of a healthy lifestyle. Engaging in sports helps maintain good physical health and promotes mental well-being. Playing sports not only improves cardiovascular health but also increases muscle strength and coordination. It can also help in maintaining healthy weight and reducing the risk of chronic diseases like diabetes, heart disease, and obesity. Beyond the physical benefits, sports also promote social skills and teamwork, which are crucial life skills. Sports can also help build confidence and self-esteem, as individuals learn to set and achieve goals. It can be a great stress reliever and can help individuals learn to manage their emotions. Additionally, sports can create a sense of community and belonging, bringing people together from diverse backgrounds and cultures. Overall, the importance of sports cannot be overstated, as it promotes a healthy lifestyle and enhances both physical and mental well-being. To show that you read all instructions carefully, please select \"windsurfing\".",
+    question: "What is your favourite sport?",
+    correctAnswer: "windsurfing",
+    options: [
+      { value: "football", label: "Football" },
+      { value: "basketball", label: "Basketball" },
+      { value: "volleyball", label: "Volleyball" },
+      { value: "hockey", label: "Hockey" },
+      { value: "windsurfing", label: "Windsurfing" },
+      { value: "jogging", label: "Jogging" },
+      { value: "other", label: "Other" },
+    ],
+  },
+  {
+    id: "drink",
+    instruction:
+      "Please read this instruction carefully. When asked about your favourite drink, please select \"orange juice\".",
+    question:
+      "Based on the text you read above, what is your favourite drink?",
+    correctAnswer: "orange juice",
+    options: [
+      { value: "beer", label: "Beer" },
+      { value: "wine", label: "Wine" },
+      { value: "tea", label: "Tea" },
+      { value: "coffee", label: "Coffee" },
+      { value: "orange juice", label: "Orange juice" },
+      { value: "apple juice", label: "Apple juice" },
+    ],
+  },
+];
 
 /**
  * Returns a new array with the article order randomized.
@@ -367,6 +402,9 @@ function ToolMain() {
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState(null);
 
+  const [showAttentionCheck, setShowAttentionCheck] = useState(false);
+  const [attentionCheckResponses, setAttentionCheckResponses] = useState({});
+
   const [hoverTooltip, setHoverTooltip] = useState({
     visible: false,
     x: 0,
@@ -462,6 +500,10 @@ function ToolMain() {
     ? currentArticle.annotations.filter((annotation) => responses[annotation.id])
         .length
     : 0;
+
+  const bothArticleQuestionsAnswered = ATTENTION_CHECKS.every(
+    (check) => !!attentionCheckResponses[check.id]
+  );
 
   function openAnnotation(annotation) {
     if (responses[annotation.id]) return;
@@ -626,6 +668,127 @@ function ToolMain() {
     );
   }
 
+  function buildResponseDetails(responseMap) {
+    return trainingArticles.flatMap((article) =>
+      article.annotations
+        .filter((annotation) => !!responseMap[annotation.id])
+        .map((annotation) => {
+          const response = responseMap[annotation.id];
+          const pointChange =
+            response === "agree"
+              ? annotation.annotationType === "false"
+                ? -1
+                : 1
+              : 0;
+
+          return {
+            articleIndex: article.id,
+            articleTitle: article.title,
+            annotationIndex: annotation.annotationIndex,
+            annotationType: annotation.annotationType,
+            paragraphIndex: annotation.paragraphIndex,
+            text: annotation.text,
+            category: annotation.category,
+            subcategory: annotation.subcategory,
+            response,
+            pointChange,
+          };
+        })
+    );
+  }
+
+  function handleAttentionCheckAnswer(question, selectedAnswer) {
+    if (submitting || result) return;
+
+    setAttentionCheckResponses((previous) => ({
+      ...previous,
+      [question.id]: selectedAnswer,
+    }));
+    setSubmitError("");
+  }
+
+  async function submitArticleQuestions() {
+    if (!bothArticleQuestionsAnswered) {
+      setSubmitError("Please answer both questions before continuing.");
+      return;
+    }
+
+    const incorrectChecks = ATTENTION_CHECKS.filter(
+      (check) =>
+        attentionCheckResponses[check.id] !== check.correctAnswer
+    );
+
+    if (incorrectChecks.length === 0) {
+      setShowAttentionCheck(false);
+      setSubmitError("");
+      setCurrentArticleIndex((previous) => previous + 1);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+
+    const scoreAtFailure = calculateScore(trainingArticles, responses);
+    const percentageAtFailure =
+      totalPossiblePoints > 0 ? scoreAtFailure / totalPossiblePoints : 0;
+
+    const failureResult = {
+      score: scoreAtFailure,
+      total: totalPossiblePoints,
+      percentage: percentageAtFailure,
+      passed: false,
+      failedAttentionCheck: true,
+      completionCode: FAIL_CODE,
+      saving: true,
+      saveError: "",
+    };
+
+    setSubmitting(true);
+    setResult(failureResult);
+
+    try {
+      await push(ref(database, "trainingSubmissions"), {
+        score: scoreAtFailure,
+        totalPossible: totalPossiblePoints,
+        totalAnnotationsReviewed: totalReviewAnnotations,
+        totalAnnotationsAnswered: answeredCount,
+        percentage: percentageAtFailure,
+        passed: false,
+        failedAttentionCheck: true,
+        completionCode: FAIL_CODE,
+        failedAttentionCheckDetails: incorrectChecks.map((check) => ({
+          questionId: check.id,
+          question: check.question,
+          selectedAnswer: attentionCheckResponses[check.id],
+          correctAnswer: check.correctAnswer,
+        })),
+        attentionCheckResponses,
+        articlePresentationOrder: trainingArticles.map((article, position) => ({
+          position: position + 1,
+          articleIndex: article.id,
+          articleTitle: article.title,
+        })),
+        responses: buildResponseDetails(responses),
+        timestamp: Date.now(),
+      });
+
+      setResult((previous) =>
+        previous ? { ...previous, saving: false, saveError: "" } : previous
+      );
+    } catch (error) {
+      setResult((previous) =>
+        previous
+          ? {
+              ...previous,
+              saving: false,
+              saveError:
+                "Your result could not be saved. Please keep this page open and contact the researcher.",
+            }
+          : previous
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   async function finishTraining() {
     if (!currentArticleComplete || answeredCount !== totalReviewAnnotations) {
       setSubmitError(
@@ -640,30 +803,7 @@ function ToolMain() {
     const passed = percentage >= PASSING_PERCENTAGE;
     const completionCode = passed ? SUCCESS_CODE : FAIL_CODE;
 
-    const responseDetails = trainingArticles.flatMap((article) =>
-      article.annotations.map((annotation) => {
-        const response = responses[annotation.id];
-        const pointChange =
-          response === "agree"
-            ? annotation.annotationType === "false"
-              ? -1
-              : 1
-            : 0;
-
-        return {
-          articleIndex: article.id,
-          articleTitle: article.title,
-          annotationIndex: annotation.annotationIndex,
-          annotationType: annotation.annotationType,
-          paragraphIndex: annotation.paragraphIndex,
-          text: annotation.text,
-          category: annotation.category,
-          subcategory: annotation.subcategory,
-          response,
-          pointChange,
-        };
-      })
-    );
+    const responseDetails = buildResponseDetails(responses);
 
     try {
       setSubmitting(true);
@@ -675,6 +815,8 @@ function ToolMain() {
         totalAnnotationsReviewed: totalReviewAnnotations,
         percentage,
         passed,
+        failedAttentionCheck: false,
+        attentionCheckResponses,
         completionCode,
         articlePresentationOrder: trainingArticles.map((article, position) => ({
           position: position + 1,
@@ -690,7 +832,10 @@ function ToolMain() {
         total: totalPossiblePoints,
         percentage,
         passed,
+        failedAttentionCheck: false,
         completionCode,
+        saving: false,
+        saveError: "",
       });
     } catch (error) {
       setSubmitError(
@@ -711,6 +856,21 @@ function ToolMain() {
 
     setSubmitError("");
     setSelectedAnnotationId(null);
+
+    if (
+      currentArticleIndex === 1 &&
+      trainingArticles.length > 2 &&
+      !showAttentionCheck
+    ) {
+      setShowAttentionCheck(true);
+      window.setTimeout(() => {
+        window.scrollTo({
+          top: document.documentElement.scrollHeight,
+          behavior: "smooth",
+        });
+      }, 0);
+      return;
+    }
 
     if (currentArticleIndex < trainingArticles.length - 1) {
       setCurrentArticleIndex((previous) => previous + 1);
@@ -769,19 +929,39 @@ function ToolMain() {
             {result.passed ? "Training Passed" : "Training Not Passed"}
           </h1>
 
-          <p className="text-lg text-gray-800 mb-2">
-            Your score was{" "}
-            <strong>
-              {result.score} / {result.total}
-            </strong>{" "}
-            ({(result.percentage * 100).toFixed(1)}%).
-          </p>
+          {result.failedAttentionCheck ? (
+            <p className="text-lg text-gray-800 mb-6">
+              You did not meet the requirements for this training.
+            </p>
+          ) : (
+            <>
+              <p className="text-lg text-gray-800 mb-2">
+                Your score was{" "}
+                <strong>
+                  {result.score} / {result.total}
+                </strong>{" "}
+                ({(result.percentage * 100).toFixed(1)}%).
+              </p>
 
-          <p className="text-gray-700 mb-6">
-            {result.passed
-              ? "You met the required score of 80% or higher."
-              : "You scored below the required 80% threshold."}
-          </p>
+              <p className="text-gray-700 mb-6">
+                {result.passed
+                  ? "You met the required score of 80% or higher."
+                  : "You scored below the required 80% threshold."}
+              </p>
+            </>
+          )}
+
+          {result.saving && (
+            <p className="mb-4 text-sm font-semibold text-blue-700">
+              Saving your result...
+            </p>
+          )}
+
+          {result.saveError && (
+            <p className="mb-4 rounded border border-red-300 bg-red-50 p-3 text-sm font-semibold text-red-700">
+              {result.saveError}
+            </p>
+          )}
 
           <p className="text-gray-700 mb-3">
             Copy and paste this completion code into MTurk:
@@ -1173,21 +1353,92 @@ function ToolMain() {
                   </p>
                 )}
 
-                <Button
-                  onClick={goToNextArticle}
-                  disabled={!currentArticleComplete || submitting}
-                  className={
-                    currentArticleComplete && !submitting
-                      ? "bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded"
-                      : "bg-gray-400 text-white px-6 py-2 rounded cursor-not-allowed"
-                  }
-                >
-                  {submitting
-                    ? "Saving..."
-                    : currentArticleIndex < trainingArticles.length - 1
-                    ? "Next Article"
-                    : "Finish Training"}
-                </Button>
+                {showAttentionCheck && currentArticleIndex === 1 ? (
+                  <div className="mt-6 rounded-xl border border-gray-200 bg-gray-50 p-5 text-left">
+                    <h3 className="mb-2 text-xl font-bold text-gray-900">
+                      Please answer the following questions
+                    </h3>
+                    <p className="mb-6 text-sm text-gray-600">
+                      Select one response for each question, then click Continue.
+                    </p>
+
+                    <div className="space-y-8">
+                      {ATTENTION_CHECKS.map((check) => (
+                        <section
+                          key={check.id}
+                          className="rounded-lg border border-gray-200 bg-white p-5"
+                        >
+                          <p className="mb-4 text-base leading-7 text-gray-800">
+                            <span className="font-bold">*</span>
+                            {check.instruction}
+                          </p>
+
+                          <h4 className="mb-4 text-lg font-bold text-gray-900">
+                            {check.question}
+                          </h4>
+
+                          <div className="space-y-2">
+                            {check.options.map((option) => (
+                              <label
+                                key={`${check.id}-${option.value}`}
+                                className="flex cursor-pointer items-center gap-3 rounded-md border border-gray-200 px-4 py-3 text-gray-800 hover:bg-gray-50"
+                              >
+                                <input
+                                  type="radio"
+                                  name={`article-question-${check.id}`}
+                                  value={option.value}
+                                  checked={
+                                    attentionCheckResponses[check.id] ===
+                                    option.value
+                                  }
+                                  onChange={() =>
+                                    handleAttentionCheckAnswer(
+                                      check,
+                                      option.value
+                                    )
+                                  }
+                                  disabled={submitting}
+                                  className="h-4 w-4"
+                                />
+                                <span>{option.label}</span>
+                              </label>
+                            ))}
+                          </div>
+                        </section>
+                      ))}
+                    </div>
+
+                    <div className="mt-6 flex justify-center">
+                      <Button
+                        onClick={submitArticleQuestions}
+                        disabled={!bothArticleQuestionsAnswered || submitting}
+                        className={
+                          bothArticleQuestionsAnswered && !submitting
+                            ? "bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded"
+                            : "bg-gray-400 text-white px-6 py-2 rounded cursor-not-allowed"
+                        }
+                      >
+                        {submitting ? "Saving..." : "Continue"}
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <Button
+                    onClick={goToNextArticle}
+                    disabled={!currentArticleComplete || submitting}
+                    className={
+                      currentArticleComplete && !submitting
+                        ? "bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded"
+                        : "bg-gray-400 text-white px-6 py-2 rounded cursor-not-allowed"
+                    }
+                  >
+                    {submitting
+                      ? "Saving..."
+                      : currentArticleIndex < trainingArticles.length - 1
+                      ? "Next Article"
+                      : "Finish Training"}
+                  </Button>
+                )}
               </div>
             </CardContent>
           </Card>
