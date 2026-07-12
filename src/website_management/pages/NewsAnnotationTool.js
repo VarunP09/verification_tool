@@ -4,14 +4,12 @@ import React, { useEffect, useRef, useState } from "react";
 import { Button } from "../components/Button";
 import { Card } from "../components/Card";
 import { CardContent } from "../components/CardContent";
-import Papa from "papaparse";
 
 import { database, ref, push } from "../../firebaseConfig";
-import { get, runTransaction } from "firebase/database";
 import instructionVid from "../../Videos/Instruction-Video.mov";
 
 /* -----------------------------
-   Intro + Task Closed Screens
+   Intro Screen
 ------------------------------ */
 
 function IntroScreen({ onDone }) {
@@ -77,54 +75,9 @@ function IntroScreen({ onDone }) {
   );
 }
 
-function TaskClosedScreen() {
-  return (
-    <div className="min-h-screen w-full flex items-center justify-center bg-gray-100">
-      <div className="w-full max-w-2xl bg-white rounded-xl shadow p-8 border border-gray-200 text-center">
-        <h1 className="text-3xl font-extrabold text-gray-900 mb-4">Task Closed</h1>
-        <p className="text-gray-700 leading-relaxed mb-2">
-          This task is no longer accepting responses because the required number of annotations has been completed.
-        </p>
-        <p className="text-gray-700 leading-relaxed mb-2">
-          You may safely return or exit the HIT without submitting.
-        </p>
-        <p className="text-gray-700 leading-relaxed">Thank you for your interest.</p>
-      </div>
-    </div>
-  );
-}
-
 /* -----------------------------
-   Paragraph logic (UNCHANGED)
+   Title formatting
 ------------------------------ */
-
-function paragraphAdd(text) {
-  const words = text.split(/\s+/);
-  const paragraphs = [];
-  let paragraph = "";
-  let wordCount = 0;
-  let insideQuote = false;
-
-  for (let i = 0; i < words.length; i++) {
-    const word = words[i];
-    paragraph += word + " ";
-    wordCount++;
-
-    if (word.includes('"')) {
-      const quoteCount = (word.match(/"/g) || []).length;
-      if (quoteCount % 2 !== 0) insideQuote = !insideQuote;
-    }
-
-    if (wordCount >= 150 && word.endsWith(".") && !insideQuote) {
-      paragraphs.push(paragraph.trim());
-      paragraph = "";
-      wordCount = 0;
-    }
-  }
-
-  if (paragraph.trim()) paragraphs.push(paragraph.trim());
-  return paragraphs;
-}
 
 function titleCapitalization(title) {
   const titleWords = title.split(" ");
@@ -138,48 +91,7 @@ function titleCapitalization(title) {
 }
 
 /* -----------------------------
-   Firebase article assignment
------------------------------- */
-
-const MAX_PER_ARTICLE = 3;
-
-async function logArticleUsage(index) {
-  const usageIdxRef = ref(database, `articleUsage/${index}`);
-  const result = await runTransaction(usageIdxRef, (curr) => {
-    const v = curr ?? 0;
-    if (v >= MAX_PER_ARTICLE) return;
-    return v + 1;
-  });
-  return result.committed;
-}
-
-async function assignArticleIndex() {
-  const usageRef = ref(database, "articleUsage");
-  const usageSnap = await get(usageRef);
-  const usage = usageSnap.exists() ? usageSnap.val() : {};
-
-  for (let i = 0; i < 12; i++) {
-    if (usage[i] === undefined) usage[i] = 0;
-  }
-
-  const candidates = Object.keys(usage)
-    .map(Number)
-    .filter((i) => usage[i] < MAX_PER_ARTICLE);
-
-  if (candidates.length === 0) return null;
-
-  const shuffled = [...candidates].sort(() => Math.random() - 0.5);
-
-  for (const i of shuffled) {
-    const ok = await logArticleUsage(i);
-    if (ok) return i;
-  }
-
-  return null;
-}
-
-/* -----------------------------
-   Original DropdownItem (kept as-is)
+   Dropdown UI
 ------------------------------ */
 
 const DropdownItem = ({ icon, title, children, openTitle, setOpenTitle, color }) => {
@@ -227,9 +139,8 @@ const DropdownItem = ({ icon, title, children, openTitle, setOpenTitle, color })
   );
 };
 
-
 /* -----------------------------
-   Subcategory Definitions (for Verification Popup)
+   Subcategory Definitions
 ------------------------------ */
 
 const SUBCATEGORY_DEFINITIONS = {
@@ -261,261 +172,631 @@ const getSubcategoryDefinition = (label) => {
 };
 
 /* -----------------------------
-   Main Tool (LLM Verification)
+   Training-set loading + highlighting helpers
+------------------------------ */
+
+const TRAINING_SET_PATH = "/article_dataset_versions/TurkerTrainingSet.json";
+const PASSING_PERCENTAGE = 0.8;
+const SUCCESS_CODE = "9F4w2B8k1P";
+const FAIL_CODE = "8K9w2X4mP1";
+
+/**
+ * Returns a new array with the article order randomized.
+ * Fisher-Yates ensures every ordering is equally likely.
+ * This runs once when the participant's training set loads,
+ * so the order remains fixed for the rest of that session.
+ */
+function shuffleArticles(items) {
+  const shuffled = [...items];
+
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+
+  return shuffled;
+}
+
+function normalizeArticleBody(body) {
+  return (body || "")
+    .toString()
+    .replace(/\r\n/g, "\n")
+    .replace(/\\n/g, "\n");
+}
+
+function getParagraphRanges(body) {
+  const paragraphs = body.split("\n");
+  const ranges = [];
+  let cursor = 0;
+
+  paragraphs.forEach((text, paragraphIndex) => {
+    ranges.push({
+      paragraphIndex,
+      text,
+      start: cursor,
+      end: cursor + text.length,
+    });
+    cursor += text.length + 1;
+  });
+
+  return ranges;
+}
+
+function findAllCaseInsensitiveMatches(body, target) {
+  const source = body.toLowerCase();
+  const needle = (target || "").toString().toLowerCase();
+  const matches = [];
+
+  if (!needle) return matches;
+
+  let fromIndex = 0;
+  while (fromIndex < source.length) {
+    const start = source.indexOf(needle, fromIndex);
+    if (start === -1) break;
+
+    matches.push({
+      start,
+      end: start + needle.length,
+    });
+
+    fromIndex = start + 1;
+  }
+
+  return matches;
+}
+
+function rangesOverlap(a, b) {
+  return Math.max(a.start, b.start) < Math.min(a.end, b.end);
+}
+
+function prepareTrainingArticles(rawArticles) {
+  if (!Array.isArray(rawArticles)) {
+    throw new Error("TurkerTrainingSet.json must contain an array of articles.");
+  }
+
+  return rawArticles.map((article, articleIndex) => {
+    const body = normalizeArticleBody(article.news_body);
+    const paragraphRanges = getParagraphRanges(body);
+    const usedRanges = [];
+
+    const prepareAnnotationList = (sourceAnnotations, annotationType) =>
+      (Array.isArray(sourceAnnotations) ? sourceAnnotations : []).map(
+        (annotation, annotationIndex) => {
+          const annotationText = (annotation.text || "").toString();
+          const paragraphIndex = Number(annotation.paragraph_index);
+          const allMatches = findAllCaseInsensitiveMatches(body, annotationText);
+          const requestedParagraph = paragraphRanges.find(
+            (paragraph) => paragraph.paragraphIndex === paragraphIndex
+          );
+
+          const preferredMatches = requestedParagraph
+            ? allMatches.filter(
+                (match) =>
+                  match.start >= requestedParagraph.start &&
+                  match.end <= requestedParagraph.end
+              )
+            : [];
+
+          const orderedMatches = [
+            ...preferredMatches,
+            ...allMatches.filter(
+              (match) =>
+                !preferredMatches.some(
+                  (preferred) =>
+                    preferred.start === match.start &&
+                    preferred.end === match.end
+                )
+            ),
+          ];
+
+          const unusedMatch = orderedMatches.find(
+            (match) => !usedRanges.some((used) => rangesOverlap(match, used))
+          );
+          const chosenMatch = unusedMatch || orderedMatches[0] || null;
+
+          if (chosenMatch) {
+            usedRanges.push(chosenMatch);
+          }
+
+          return {
+            id: `${articleIndex}-${annotationType}-${annotationIndex}`,
+            articleIndex,
+            annotationIndex,
+            annotationType,
+            paragraphIndex,
+            text: annotationText,
+            category: (annotation.category || "").toString(),
+            subcategory: (annotation.subcategory || "").toString(),
+            start: chosenMatch?.start ?? null,
+            end: chosenMatch?.end ?? null,
+          };
+        }
+      );
+
+    // Regular annotations can add one point when accepted. False annotations
+    // are shown identically, but accepting one subtracts one point.
+    const regularAnnotations = prepareAnnotationList(
+      article.annotations,
+      "regular"
+    );
+    const falseAnnotations = prepareAnnotationList(
+      article.false_annotations,
+      "false"
+    );
+
+    return {
+      id: articleIndex,
+      title: (article.title || "").toString(),
+      body,
+      paragraphRanges,
+      regularAnnotationCount: regularAnnotations.length,
+      falseAnnotationCount: falseAnnotations.length,
+      annotations: [...regularAnnotations, ...falseAnnotations],
+    };
+  });
+}
+
+function calculateScore(articles, responses) {
+  return articles.reduce(
+    (total, article) =>
+      total +
+      article.annotations.reduce((articleScore, annotation) => {
+        if (responses[annotation.id] !== "agree") return articleScore;
+        return articleScore + (annotation.annotationType === "false" ? -1 : 1);
+      }, 0),
+    0
+  );
+}
+
+/* -----------------------------
+   Main Tool (full-article training verification)
 ------------------------------ */
 
 function ToolMain() {
-  const [taskClosed, setTaskClosed] = useState(false);
-  // --- Original side panel UI state (kept as-is for later editing) ---
   const [openDropdown, setOpenDropdown] = useState(null);
   const [showRightInstructions, setShowRightInstructions] = useState(true);
-  // (Unused in verification flow, but preserved so the original side panels render exactly as before)
-  const [selectedText, setSelectedText] = useState("");
-  const [wordCount, setWordCount] = useState(0);
 
-  // --- Completion code flow (restored from original) ---
-  const [showThankYou, setShowThankYou] = useState(false);
-  const [completionCode, setCompletionCode] = useState("");
-
-  // --- Verification progress ---
-  const [readyToSubmit, setReadyToSubmit] = useState(false);
-  const [completedCount, setCompletedCount] = useState(0);
-  const [allArticles, setAllArticles] = useState([]);
-  const [articles, setArticles] = useState([]);
+  const [trainingArticles, setTrainingArticles] = useState([]);
   const [currentArticleIndex, setCurrentArticleIndex] = useState(0);
-  const [currentParagraphIndex, setCurrentParagraphIndex] = useState(0);
-  const [selectedIdx, setSelectedIdx] = useState(null);
+  const [responses, setResponses] = useState({});
+  const [selectedAnnotationId, setSelectedAnnotationId] = useState(null);
 
-  const [llmAnnotations, setLlmAnnotations] = useState({});
-  const [showPopup, setShowPopup] = useState(false);
-  // Hover tooltip for quick label preview (follows cursor)
-  const [hoverTooltip, setHoverTooltip] = useState({ visible: false, x: 0, y: 0, label: "" });
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [submitError, setSubmitError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [result, setResult] = useState(null);
 
-  // --- Post-verification survey (shown after all paragraphs are accepted/denied) ---
-  const [showSurvey, setShowSurvey] = useState(false);
-  const [surveyQ1, setSurveyQ1] = useState(null); // confidence in polarizing language (1-5)
-  const [surveyQ2, setSurveyQ2] = useState(null); // perceived bias (1-5)
-  const [surveyQ3, setSurveyQ3] = useState("");  // free response (min 100 chars)
-  const [surveyQ4, setSurveyQ4] = useState("");
-  const [surveyFinished, setSurveyFinished] = useState(false);
-  const [surveyError, setSurveyError] = useState("");
+  const [hoverTooltip, setHoverTooltip] = useState({
+    visible: false,
+    x: 0,
+    y: 0,
+    category: "",
+    subcategory: "",
+  });
 
-
-  const currentArticle = articles[currentArticleIndex];
-  const paragraphs = currentArticle ? paragraphAdd(currentArticle.content) : [];
-
-  /* -------- Load article + claim -------- */
   useEffect(() => {
-    fetch("/article_dataset_versions/test3_encoding_fixed_300_700_words.csv")
-      .then((response) => response.text())
-      .then(async (csvText) => {
-        Papa.parse(csvText, {
-          header: true,
-          skipEmptyLines: true,
-          complete: async function (results) {
-            const parsedArticles = results.data.map((item, index) => ({
-              id: index + 1,
-              title: item["Headline"],
-              content: item["News body"],
-            }));
+    let cancelled = false;
 
-            setAllArticles(parsedArticles);
+    async function loadTrainingSet() {
+      try {
+        setLoading(true);
+        setLoadError("");
 
-            const idx = await assignArticleIndex();
-            if (idx !== null) {
-              setSelectedIdx(idx);
-              setArticles([parsedArticles[idx]]);
-            } else {
-              setTaskClosed(true);
-            }
-          },
-        });
-      });
+        const response = await fetch(TRAINING_SET_PATH);
+        if (!response.ok) {
+          throw new Error(
+            `Could not load ${TRAINING_SET_PATH} (HTTP ${response.status}).`
+          );
+        }
+
+        const rawArticles = await response.json();
+        const preparedArticles = prepareTrainingArticles(rawArticles);
+
+        if (preparedArticles.length === 0) {
+          throw new Error("The training set does not contain any articles.");
+        }
+
+        const totalPossiblePoints = preparedArticles.reduce(
+          (sum, article) => sum + article.regularAnnotationCount,
+          0
+        );
+        const totalReviewAnnotations = preparedArticles.reduce(
+          (sum, article) => sum + article.annotations.length,
+          0
+        );
+
+        if (totalPossiblePoints === 0 || totalReviewAnnotations === 0) {
+          throw new Error("The training set does not contain any annotations.");
+        }
+
+        if (!cancelled) {
+          // Randomize the four-article presentation order once per participant.
+          // Annotation IDs retain their original article indices, so scoring and
+          // Firebase response records remain stable regardless of presentation order.
+          setTrainingArticles(shuffleArticles(preparedArticles));
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setLoadError(
+            error?.message ||
+              "The training set could not be loaded. Please refresh and try again."
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    }
+
+    loadTrainingSet();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  /* -------- Load LLMAnnotations for article -------- */
-  useEffect(() => {
-    if (selectedIdx === null) return;
+  const currentArticle = trainingArticles[currentArticleIndex] || null;
+  const totalReviewAnnotations = trainingArticles.reduce(
+    (sum, article) => sum + article.annotations.length,
+    0
+  );
+  const totalPossiblePoints = trainingArticles.reduce(
+    (sum, article) => sum + article.regularAnnotationCount,
+    0
+  );
+  const answeredCount = Object.keys(responses).length;
+  const score = calculateScore(trainingArticles, responses);
 
-    // Reset progress for a newly selected article
-    setCurrentParagraphIndex(0);
-    setReadyToSubmit(false);
-    setCompletedCount(0);
+  const selectedAnnotation =
+    currentArticle?.annotations.find(
+      (annotation) => annotation.id === selectedAnnotationId
+    ) || null;
 
-    // Reset survey state for the new article
-    setShowSurvey(false);
-    setSurveyFinished(false);
-    setSurveyQ1(null);
-    setSurveyQ2(null);
-    setSurveyQ3("");
-    setSurveyQ4("");
-    setSurveyError("");
+  const currentArticleComplete =
+    !!currentArticle &&
+    currentArticle.annotations.every((annotation) => responses[annotation.id]);
 
-    const llmRef = ref(database, `LLMAnnotations/${selectedIdx}`);
-    get(llmRef).then((snap) => {
-      if (snap.exists()) setLlmAnnotations(snap.val());
-      else setLlmAnnotations({});
-    });
-  }, [selectedIdx]);
+  const currentArticleAnsweredCount = currentArticle
+    ? currentArticle.annotations.filter((annotation) => responses[annotation.id])
+        .length
+    : 0;
 
-  /* -------- Voting logic -------- */
-  async function submitVote(type) {
-    const voteRef = ref(
-      database,
-      `LLMAnnotations/${selectedIdx}/${currentParagraphIndex}/${type}`
-    );
-    await runTransaction(voteRef, (curr) => (curr ?? 0) + 1);
+  function openAnnotation(annotation) {
+    if (responses[annotation.id]) return;
 
-    setShowPopup(false);
-    setHoverTooltip((prev) => ({ ...prev, visible: false }));
-
-    // Mark this paragraph as completed (exactly 1 vote per paragraph)
-    setCompletedCount((prev) => {
-      const next = prev + 1;
-      if (next >= paragraphs.length) {
-        // Finished verifying every paragraph – show post-annotation survey
-        setReadyToSubmit(true);
-        setShowSurvey(true);
-      }
-      return next;
-    });
-
-    // Only advance if there is a next paragraph
-    if (currentParagraphIndex < paragraphs.length - 1) {
-      setCurrentParagraphIndex((p) => p + 1);
-    }
+    setHoverTooltip((previous) => ({
+      ...previous,
+      visible: false,
+    }));
+    setSelectedAnnotationId(annotation.id);
   }
 
-  /* -------- Highlight renderer -------- */
-  function renderParagraph(text, span, subcategoryLabel) {
-    const disabled = readyToSubmit;
-    const handleClick = () => {
-      if (!disabled) {
-        setHoverTooltip((prev) => ({ ...prev, visible: false }));
-        setShowPopup(true);
-      }
+  function submitVote(decision) {
+    if (!selectedAnnotation || responses[selectedAnnotation.id]) return;
+
+    setResponses((previous) => ({
+      ...previous,
+      [selectedAnnotation.id]: decision,
+    }));
+
+    setSelectedAnnotationId(null);
+    setHoverTooltip((previous) => ({
+      ...previous,
+      visible: false,
+    }));
+  }
+
+  function getHighlightClass(annotation) {
+    const response = responses[annotation.id];
+
+    if (response === "agree") {
+      return "bg-green-200 ring-1 ring-green-400 cursor-not-allowed";
+    }
+
+    if (response === "disagree") {
+      return "bg-red-200 ring-1 ring-red-400 cursor-not-allowed";
+    }
+
+    return "bg-yellow-200 hover:bg-yellow-300 cursor-pointer";
+  }
+
+  function renderHighlight(annotation, visibleText) {
+    const answered = !!responses[annotation.id];
+    const tooltipCategory = annotation.category || "Unknown category";
+    const tooltipSubcategory =
+      annotation.subcategory || "Unknown subcategory";
+
+    const handleMouseEnter = (event) => {
+      if (answered) return;
+
+      setHoverTooltip({
+        visible: true,
+        x: event.clientX,
+        y: event.clientY,
+        category: tooltipCategory,
+        subcategory: tooltipSubcategory,
+      });
     };
 
+    const handleMouseMove = (event) => {
+      if (answered) return;
 
-    const labelForTooltip = (subcategoryLabel || "").toString().trim() || "Unknown";
-
-    const handleMouseEnter = (e) => {
-      if (disabled) return;
-      setHoverTooltip({ visible: true, x: e.clientX, y: e.clientY, label: labelForTooltip });
-    };
-
-    const handleMouseMove = (e) => {
-      if (disabled) return;
-      setHoverTooltip((prev) =>
-        prev.visible ? { ...prev, x: e.clientX, y: e.clientY } : prev
+      setHoverTooltip((previous) =>
+        previous.visible
+          ? {
+              ...previous,
+              x: event.clientX,
+              y: event.clientY,
+            }
+          : previous
       );
     };
 
     const handleMouseLeave = () => {
-      setHoverTooltip((prev) => ({ ...prev, visible: false }));
+      setHoverTooltip((previous) => ({
+        ...previous,
+        visible: false,
+      }));
     };
 
-
-    const cls = disabled
-      ? "bg-yellow-200 opacity-60 cursor-not-allowed"
-      : "bg-yellow-200 cursor-pointer";
-
-    // No polarizing language: highlight entire paragraph
-    if (!span || span === "no polarizing language selected") {
-      return (
-        <span className={cls} onClick={handleClick} onMouseEnter={handleMouseEnter} onMouseOver={handleMouseEnter} onMouseMove={handleMouseMove} onMouseLeave={handleMouseLeave}>
-          {text}
-        </span>
-      );
-    }
-
-    const idx = text.indexOf(span);
-    if (idx === -1) {
-      // Fallback: highlight everything if span mismatch
-      return (
-        <span className={cls} onClick={handleClick} onMouseEnter={handleMouseEnter} onMouseOver={handleMouseEnter} onMouseMove={handleMouseMove} onMouseLeave={handleMouseLeave}>
-          {text}
-        </span>
-      );
-    }
-
     return (
-      <>
-        {text.slice(0, idx)}
-        <span className={cls} onClick={handleClick} onMouseEnter={handleMouseEnter} onMouseOver={handleMouseEnter} onMouseMove={handleMouseMove} onMouseLeave={handleMouseLeave}>
-          {span}
-        </span>
-        {text.slice(idx + span.length)}
-      </>
+      <span
+        key={annotation.id}
+        className={`${getHighlightClass(
+          annotation
+        )} rounded-sm px-0.5 transition-colors`}
+        onClick={() => openAnnotation(annotation)}
+        onMouseEnter={handleMouseEnter}
+        onMouseMove={handleMouseMove}
+        onMouseLeave={handleMouseLeave}
+        role="button"
+        tabIndex={answered ? -1 : 0}
+        onKeyDown={(event) => {
+          if (!answered && (event.key === "Enter" || event.key === " ")) {
+            event.preventDefault();
+            openAnnotation(annotation);
+          }
+        }}
+        aria-disabled={answered}
+        title={
+          answered
+            ? `Answered: ${responses[annotation.id]}`
+            : `${tooltipCategory}: ${tooltipSubcategory}`
+        }
+      >
+        {visibleText}
+      </span>
     );
   }
 
-  const generateCode = () =>
-    `MTURK-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
+  function renderParagraph(paragraph) {
+    if (!currentArticle) return null;
 
-  const handleFinalSubmit = async () => {
-    const ok = !!surveyQ1 && !!surveyQ2 && (surveyQ3 || "").trim().length >= 100 && (surveyQ4 || "").trim().length >= 100;
-    if (!ok) {
-      setSurveyError("Please answer all questions. Questions 3 & 4 must be at least 100 characters.");
+    const paragraphAnnotations = currentArticle.annotations
+      .filter(
+        (annotation) =>
+          annotation.start !== null &&
+          annotation.end !== null &&
+          annotation.start >= paragraph.start &&
+          annotation.end <= paragraph.end
+      )
+      .sort((a, b) => a.start - b.start || a.end - b.end);
+
+    const pieces = [];
+    let cursor = paragraph.start;
+
+    paragraphAnnotations.forEach((annotation) => {
+      if (annotation.start < cursor) return;
+
+      if (annotation.start > cursor) {
+        pieces.push(
+          <React.Fragment key={`text-${paragraph.paragraphIndex}-${cursor}`}>
+            {currentArticle.body.slice(cursor, annotation.start)}
+          </React.Fragment>
+        );
+      }
+
+      pieces.push(
+        renderHighlight(
+          annotation,
+          currentArticle.body.slice(annotation.start, annotation.end)
+        )
+      );
+
+      cursor = annotation.end;
+    });
+
+    if (cursor < paragraph.end) {
+      pieces.push(
+        <React.Fragment key={`text-${paragraph.paragraphIndex}-${cursor}-end`}>
+          {currentArticle.body.slice(cursor, paragraph.end)}
+        </React.Fragment>
+      );
+    }
+
+    return (
+      <p
+        key={`paragraph-${paragraph.paragraphIndex}`}
+        className="text-gray-700 mb-5 text-left leading-8 text-lg"
+      >
+        {pieces}
+      </p>
+    );
+  }
+
+  async function finishTraining() {
+    if (!currentArticleComplete || answeredCount !== totalReviewAnnotations) {
+      setSubmitError(
+        "Please answer every highlighted annotation before finishing the training."
+      );
       return;
     }
 
+    const finalScore = calculateScore(trainingArticles, responses);
+    const percentage =
+      totalPossiblePoints > 0 ? finalScore / totalPossiblePoints : 0;
+    const passed = percentage >= PASSING_PERCENTAGE;
+    const completionCode = passed ? SUCCESS_CODE : FAIL_CODE;
+
+    const responseDetails = trainingArticles.flatMap((article) =>
+      article.annotations.map((annotation) => {
+        const response = responses[annotation.id];
+        const pointChange =
+          response === "agree"
+            ? annotation.annotationType === "false"
+              ? -1
+              : 1
+            : 0;
+
+        return {
+          articleIndex: article.id,
+          articleTitle: article.title,
+          annotationIndex: annotation.annotationIndex,
+          annotationType: annotation.annotationType,
+          paragraphIndex: annotation.paragraphIndex,
+          text: annotation.text,
+          category: annotation.category,
+          subcategory: annotation.subcategory,
+          response,
+          pointChange,
+        };
+      })
+    );
+
     try {
-      const code = generateCode();
-      setCompletionCode(code);
+      setSubmitting(true);
+      setSubmitError("");
 
-      const ts = Date.now();
-      const articleKey = selectedIdx !== null ? String(selectedIdx) : "unknown";
+      await push(ref(database, "trainingSubmissions"), {
+        score: finalScore,
+        totalPossible: totalPossiblePoints,
+        totalAnnotationsReviewed: totalReviewAnnotations,
+        percentage,
+        passed,
+        completionCode,
+        articlePresentationOrder: trainingArticles.map((article, position) => ({
+          position: position + 1,
+          articleIndex: article.id,
+          articleTitle: article.title,
+        })),
+        responses: responseDetails,
+        timestamp: Date.now(),
+      });
 
-      const submissionPayload = {
-        articleTitles: {
-          [articleKey]: currentArticle?.title || "",
-        },
-        code,
-        surveyResponses: {
-          [articleKey]: {
-            bias: surveyQ2,
-            confidence: surveyQ1,
-            openFeedback1: (surveyQ3 || "").trim(),
-            openFeedback2: (surveyQ4 || "").trim(),
-          },
-        },
-        timestamp: ts,
-      };
-
-      await push(ref(database, "submissions"), submissionPayload);
-
-      setSurveyFinished(true);
-      setSurveyError("");
-      setShowThankYou(true);
-    } catch (e) {
-      setSurveyError("We could not save your responses. Please try again.");
+      setResult({
+        score: finalScore,
+        total: totalPossiblePoints,
+        percentage,
+        passed,
+        completionCode,
+      });
+    } catch (error) {
+      setSubmitError(
+        "Your answers could not be saved. Please check your connection and try again."
+      );
+    } finally {
+      setSubmitting(false);
     }
-  };
+  }
 
+  function goToNextArticle() {
+    if (!currentArticleComplete) {
+      setSubmitError(
+        "Please answer every highlighted annotation in this article before continuing."
+      );
+      return;
+    }
 
-  useEffect(() => {
-    if (!showThankYou) return;
+    setSubmitError("");
+    setSelectedAnnotationId(null);
 
-    // Completion code is generated at final submit time to ensure it is stored alongside the submission.
-  }, [showThankYou]);
+    if (currentArticleIndex < trainingArticles.length - 1) {
+      setCurrentArticleIndex((previous) => previous + 1);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
 
-  if (taskClosed) return <TaskClosedScreen />;
+    finishTraining();
+  }
 
-  if (showThankYou) {
+  if (loading) {
     return (
-      <div className="w-full h-screen flex items-center justify-center bg-white">
-        <div className="max-w-xl text-center p-6 border border-gray-300 rounded shadow">
-          <h2 className="text-2xl font-bold mb-4">🎉 Thank You!</h2>
-          <p className="mb-4 text-gray-700">
-            Thank you for taking part in this study. Your responses have been recorded.
+      <div className="min-h-screen w-full flex items-center justify-center bg-gray-100">
+        <div className="bg-white rounded-xl shadow p-8 text-center">
+          <h1 className="text-2xl font-bold text-gray-900 mb-2">
+            Loading Training Set
+          </h1>
+          <p className="text-gray-600">
+            Please wait while the articles and annotations are prepared.
           </p>
-          <p className="mb-4 text-gray-700">
-            Please copy and paste the following completion code into MTurk:
+        </div>
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="min-h-screen w-full flex items-center justify-center bg-gray-100">
+        <div className="w-full max-w-2xl bg-white rounded-xl shadow p-8 text-center">
+          <h1 className="text-2xl font-bold text-red-700 mb-3">
+            Training Set Could Not Be Loaded
+          </h1>
+          <p className="text-gray-700 mb-4">{loadError}</p>
+          <p className="text-sm text-gray-500">
+            Confirm that TurkerTrainingSet.json is available at{" "}
+            <code>{TRAINING_SET_PATH}</code>.
           </p>
-          <div className="bg-gray-100 text-lg font-mono p-4 rounded border border-dashed border-gray-400 mb-4">
-            {completionCode}
+        </div>
+      </div>
+    );
+  }
+
+  if (result) {
+    return (
+      <div className="min-h-screen w-full flex items-center justify-center bg-gray-100">
+        <div
+          className={`w-full max-w-2xl bg-white rounded-xl shadow p-8 border text-center ${
+            result.passed ? "border-green-300" : "border-red-300"
+          }`}
+        >
+          <h1
+            className={`text-3xl font-extrabold mb-4 ${
+              result.passed ? "text-green-700" : "text-red-700"
+            }`}
+          >
+            {result.passed ? "Training Passed" : "Training Not Passed"}
+          </h1>
+
+          <p className="text-lg text-gray-800 mb-2">
+            Your score was{" "}
+            <strong>
+              {result.score} / {result.total}
+            </strong>{" "}
+            ({(result.percentage * 100).toFixed(1)}%).
+          </p>
+
+          <p className="text-gray-700 mb-6">
+            {result.passed
+              ? "You met the required score of 80% or higher."
+              : "You scored below the required 80% threshold."}
+          </p>
+
+          <p className="text-gray-700 mb-3">
+            Copy and paste this completion code into MTurk:
+          </p>
+
+          <div
+            className={`text-lg font-mono p-4 rounded border border-dashed mb-4 ${
+              result.passed
+                ? "bg-green-50 border-green-400"
+                : "bg-red-50 border-red-400"
+            }`}
+          >
+            {result.completionCode}
           </div>
+
           <p className="text-sm text-gray-500">
             You may now close this window or return to the task page.
           </p>
@@ -524,12 +805,15 @@ function ToolMain() {
     );
   }
 
-  const llmForCurrent = llmAnnotations[currentParagraphIndex];
+  const unmatchedAnnotations =
+    currentArticle?.annotations.filter(
+      (annotation) => annotation.start === null || annotation.end === null
+    ) || [];
 
   return (
     <div className="flex w-full justify-center items-start min-h-screen bg-gray-100 relative">
 
-      {/* Instructions Sidebar (ORIGINAL) */}
+{/* Instructions Sidebar (ORIGINAL) */}
       <div
         className={`w-1/4 p-4 bg-gray-200 shadow-md transition-all duration-300 ${
           showRightInstructions
@@ -801,8 +1085,8 @@ function ToolMain() {
         </Button>
       </div>
 
-      {/* Main Content */}
-      <div className="w-3/4 max-w-2xl bg-white p-6 rounded-lg shadow-md text-center">
+{/* Main Content */}
+      <div className="flex-1 max-w-5xl bg-white p-6 rounded-lg shadow-md text-center">
         <Button
           onClick={() => setShowRightInstructions(!showRightInstructions)}
           className="bg-blue-600 text-white mb-4"
@@ -810,237 +1094,250 @@ function ToolMain() {
           {showRightInstructions ? "Hide Instructions" : "Show Instructions"}
         </Button>
 
-        {articles.length > 0 && (
+        <div className="mb-5 rounded-lg border border-gray-200 bg-gray-50 p-4 text-left">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="font-semibold text-gray-900">
+              Article {currentArticleIndex + 1} of {trainingArticles.length}
+            </p>
+            <p className="text-sm text-gray-700">
+              Overall progress: {answeredCount} of {totalReviewAnnotations} annotations
+              answered
+            </p>
+          </div>
+
+          <div className="mt-3 h-2 w-full overflow-hidden rounded bg-gray-200">
+            <div
+              className="h-full bg-blue-600 transition-all"
+              style={{
+                width: `${
+                  totalReviewAnnotations > 0
+                    ? (answeredCount / totalReviewAnnotations) * 100
+                    : 0
+                }%`,
+              }}
+            />
+          </div>
+        </div>
+
+        {currentArticle && (
           <Card>
-            <h2 className="text-xl font-bold text-gray-900 mb-2">
-              {titleCapitalization(articles[currentArticleIndex]?.title)}
+            <h2 className="text-2xl font-bold text-gray-900 mb-5">
+              {titleCapitalization(currentArticle.title)}
             </h2>
+
             <CardContent>
-              <p className="text-gray-700 mb-4">
-                {renderParagraph(paragraphs[currentParagraphIndex], llmForCurrent?.span, llmForCurrent?.subcategory)}
-              </p>
-              {/* Post-Annotation Survey (appears after all paragraphs are verified) */}
-              {showSurvey && readyToSubmit && (
-                <div className="mt-6 border-t border-gray-200 pt-5 text-left">
-                  <h3 className="text-xl font-bold mb-4 text-gray-900">Post-Annotation Survey</h3>
+              <div className="article-body">
+                {currentArticle.paragraphRanges.map(renderParagraph)}
+              </div>
 
-                  <div className="space-y-6">
-                    <div>
-                      <p className="font-semibold mb-2 text-gray-800">
-                        1. How confident are you in your evaluations of the LLM’s annotations in this article?
-                      </p>
-                      <div className="space-y-2">
-                        {[1, 2, 3, 4, 5].map((v) => (
-                          <label key={`q1-${v}`} className="flex items-center space-x-2 text-sm text-gray-800">
-                            <input
-                              type="radio"
-                              name="surveyQ1"
-                              value={v}
-                              checked={surveyQ1 === v}
-                              onChange={() => { setSurveyQ1(v); setSurveyError(""); }}
-                              disabled={surveyFinished}
-                            />
-                            <span>
-                              {v} — {
-                                v === 1 ? "Not at all confident" :
-                                v === 2 ? "Slightly confident" :
-                                v === 3 ? "Moderately confident" :
-                                v === 4 ? "Very confident" :
-                                          "Extremely confident"
-                              }
-                            </span>
-                          </label>
-                        ))}
-                      </div>
-                    </div>
+              {unmatchedAnnotations.length > 0 && (
+                <div className="mt-6 rounded-lg border border-orange-300 bg-orange-50 p-4 text-left">
+                  <p className="font-semibold text-orange-900 mb-2">
+                    Annotation text matching warning
+                  </p>
+                  <p className="text-sm text-orange-800 mb-3">
+                    The following annotation text could not be matched
+                    automatically in the article. Review each item directly so
+                    the training can still be completed.
+                  </p>
 
-                    <div>
-                      <p className="font-semibold mb-2 text-gray-800">
-                        2. Overall, how accurate did the LLM’s annotations seem in identifying polarizing language in the article?
-                      </p>
-                      <div className="space-y-2">
-                        {[1, 2, 3, 4, 5].map((v) => (
-                          <label key={`q2-${v}`} className="flex items-center space-x-2 text-sm text-gray-800">
-                            <input
-                              type="radio"
-                              name="surveyQ2"
-                              value={v}
-                              checked={surveyQ2 === v}
-                              onChange={() => { setSurveyQ2(v); setSurveyError(""); }}
-                              disabled={surveyFinished}
-                            />
-                            <span>
-                              {v} — {
-                                v === 1 ? "Not at all accurate" :
-                                v === 2 ? "Slightly accurate" :
-                                v === 3 ? "Moderately accurate" :
-                                v === 4 ? "Very accurate" :
-                                          "Extremely accurate"
-                              }
-                            </span>
-                          </label>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div>
-                      <p className="font-semibold mb-2 text-gray-800">
-                        3. Please briefly explain why you agreed or disagreed with the LLM’s annotations.
-                        You might reference particular sentences, framing choices, or emotional wording that influenced your decision.
-                      </p>
-                      <textarea
-                        className="w-full min-h-[140px] border border-gray-300 rounded p-3 text-sm text-gray-800"
-                        value={surveyQ3}
-                        onChange={(e) => { setSurveyQ3(e.target.value); setSurveyError(""); }}
-                        placeholder='For example: "I agreed/disagreed with the LLM annotation because..."'
-                        disabled={surveyFinished}
-                      />
-                      <p className="text-xs text-gray-500 mt-1">
-                        Character count: {surveyQ3.length} (minimum 100 characters)
-                      </p>
-                    </div>
-                    <div>
-                      <p className="font-semibold mb-2 text-gray-800">
-                        4. Aside from the LLM’s annotations, how did you personally feel about the article overall?
-                      </p>
-                      <textarea
-                        className="w-full min-h-[140px] border border-gray-300 rounded p-3 text-sm text-gray-800"
-                        value={surveyQ4}
-                        onChange={(e) => { setSurveyQ4(e.target.value); setSurveyError(""); }}
-                        placeholder='For example: "I felt..."'
-                        disabled={surveyFinished}
-                      />
-                      <p className="text-xs text-gray-500 mt-1">
-                        Character count: {surveyQ4.length} (minimum 100 characters)
-                      </p>
-                    </div>
-
-                    {/* {surveyError && (
-                      <div className="text-sm text-red-600 font-semibold">
-                        {surveyError}
-                      </div>
-                    )} */}
-                  </div>
-
-                  <div className="mt-6 flex flex-col items-start space-y-3">
-                    <div className="flex flex-col items-start space-y-2">
-                    {surveyError && (
-                      <div className="text-sm text-red-600">{surveyError}</div>
-                    )}
-                    <Button
-                      onClick={handleFinalSubmit}
-                      className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded"
-                    >
-                      Submit
-                    </Button>
-                  </div>
+                  <div className="space-y-2">
+                    {unmatchedAnnotations.map((annotation) => (
+                      <button
+                        key={`unmatched-${annotation.id}`}
+                        type="button"
+                        disabled={!!responses[annotation.id]}
+                        onClick={() => openAnnotation(annotation)}
+                        className={`w-full rounded border p-3 text-left text-sm ${
+                          responses[annotation.id]
+                            ? "border-gray-300 bg-gray-100 text-gray-500 cursor-not-allowed"
+                            : "border-orange-300 bg-white text-gray-800 hover:bg-orange-100"
+                        }`}
+                      >
+                        “{annotation.text}”
+                      </button>
+                    ))}
                   </div>
                 </div>
               )}
 
+              <div className="mt-8 border-t border-gray-200 pt-5">
+                <p className="text-sm text-gray-600 mb-3">
+                  This article: {currentArticleAnsweredCount} of{" "}
+                  {currentArticle.annotations.length} annotations answered
+                </p>
+
+                {submitError && (
+                  <p className="mb-3 text-sm font-semibold text-red-600">
+                    {submitError}
+                  </p>
+                )}
+
+                <Button
+                  onClick={goToNextArticle}
+                  disabled={!currentArticleComplete || submitting}
+                  className={
+                    currentArticleComplete && !submitting
+                      ? "bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded"
+                      : "bg-gray-400 text-white px-6 py-2 rounded cursor-not-allowed"
+                  }
+                >
+                  {submitting
+                    ? "Saving..."
+                    : currentArticleIndex < trainingArticles.length - 1
+                    ? "Next Article"
+                    : "Finish Training"}
+                </Button>
+              </div>
             </CardContent>
           </Card>
         )}
 
-        
-
-{/* Popup */}
-        {showPopup && llmForCurrent && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-            <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full text-center animate-fadeIn">
-              <h2 className="text-2xl font-bold mb-3 text-gray-900">Verify LLM Annotation</h2>
+        {/* Annotation Popup */}
+        {selectedAnnotation && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+            <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-lg w-full text-center animate-fadeIn">
+              <h2 className="text-2xl font-bold mb-3 text-gray-900">
+                Verify Annotation
+              </h2>
 
               <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 text-left mb-4">
-                <p className="text-xs text-gray-500 mb-1 font-semibold">Highlighted text</p>
-                <p className="text-sm text-gray-800 break-words">“{llmForCurrent.span}”</p>
+                <p className="text-xs text-gray-500 mb-1 font-semibold">
+                  Highlighted text
+                </p>
+                <p className="text-sm text-gray-800 break-words">
+                  “{selectedAnnotation.text}”
+                </p>
               </div>
 
+              <div className="grid grid-cols-1 gap-3 text-left mb-5">
+                <div className="rounded-lg border border-gray-200 p-3">
+                  <p className="text-xs font-semibold text-gray-500 mb-1">
+                    Category
+                  </p>
+                  <p className="text-sm font-semibold text-gray-900">
+                    {selectedAnnotation.category}
+                  </p>
+                </div>
+
+                <div className="rounded-lg border border-gray-200 p-3">
+                  <p className="text-xs font-semibold text-gray-500 mb-1">
+                    Subcategory
+                  </p>
+                  <p className="text-sm font-semibold text-gray-900">
+                    {selectedAnnotation.subcategory}
+                  </p>
+                </div>
+              </div>
+
+              {getSubcategoryDefinition(selectedAnnotation.subcategory) && (
+                <div className="border border-gray-200 rounded-lg p-4 text-left mb-5 bg-gray-50">
+                  <p className="text-xs text-gray-500 mb-1 font-semibold">
+                    Definition of {selectedAnnotation.subcategory}
+                  </p>
+                  <p className="text-sm text-gray-800 leading-relaxed">
+                    {getSubcategoryDefinition(
+                      selectedAnnotation.subcategory
+                    )}
+                  </p>
+                </div>
+              )}
+
               <p className="text-sm text-gray-700 mb-6 leading-relaxed">
-                The LLM labeled this highlight as <strong>{llmForCurrent.subcategory}</strong>.
-                Please confirm whether you agree.
+                Do you agree that the highlighted text belongs to the category
+                and subcategory shown above?
               </p>
-
-
-{getSubcategoryDefinition(llmForCurrent.subcategory) && (
-  <div className="border border-gray-200 rounded-lg p-4 text-left mb-5 bg-gray-50">
-    <p className="text-xs text-gray-500 mb-1 font-semibold capitalize">Definition of {llmForCurrent.subcategory}</p>
-    <p className="text-sm text-gray-800 leading-relaxed">
-      {getSubcategoryDefinition(llmForCurrent.subcategory)}
-    </p>
-  </div>
-)}
 
               <div className="flex justify-center space-x-4">
                 <Button
-                  onClick={() => submitVote("deny")}
+                  onClick={() => submitVote("disagree")}
                   className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded"
                 >
-                  Deny
+                  Disagree
                 </Button>
+
                 <Button
-                  onClick={() => submitVote("accept")}
+                  onClick={() => submitVote("agree")}
                   className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded"
                 >
-                  Accept
+                  Agree
                 </Button>
               </div>
 
-<div className="mt-3 flex justify-center">
-  <Button
-    onClick={() => setShowPopup(false)}
-    className="bg-gray-400 hover:bg-gray-500 text-white px-3 py-1 rounded text-xs"
-  >
-    Back to paragraph
-  </Button>
-</div>
-
+              <div className="mt-3 flex justify-center">
+                <Button
+                  onClick={() => setSelectedAnnotationId(null)}
+                  className="bg-gray-400 hover:bg-gray-500 text-white px-3 py-1 rounded text-xs"
+                >
+                  Back to article
+                </Button>
+              </div>
             </div>
           </div>
         )}
       </div>
 
-      {/* Instructions Panel on Right (ORIGINAL) */}
+      {/* Instructions Panel on Right */}
       <div
-        className={`w-1/4 p-4 bg-blue transition-all duration-300 ${
+        className={`w-1/4 p-4 transition-all duration-300 ${
           showRightInstructions
             ? "visible opacity-100 pointer-events-auto"
             : "invisible opacity-0 pointer-events-none"
         }`}
       >
         <h3 className="text-lg font-bold mb-3">Instructions</h3>
+
         <p className="text-sm ml-3 text-left">
-          You will verify <strong>1 news article</strong>. Please follow these
-          steps for each paragraph:
+          You will review every highlighted annotation in the training set.
         </p>
-        <div className="h-4 text-left" />
-        <div className="h-4 text-left" />
-        <ul className="list-decimal text-left ml-5 list-inside text-sm space-y-1">
-          <li>
-            <strong>Read the paragraph</strong> shown on the screen.
-          </li>
-          <div className="h-3" />
-          <li>
-            <strong>Click the highlighted text</strong> to view the LLM's
-            subcategory label.
-          </li>
-          <div className="h-3" />
-          <li>
-            <strong>Accept</strong> if the label matches the highlighted text,
-            or <strong>Deny</strong> if it does not.
-          </li>
-          <div className="h-3" />
-          <li>
-            After choosing, you will automatically move to the next paragraph.
-          </li>
-        </ul>
+
         <div className="h-4" />
-        <p className="text-sm text-gray-500 italic">
-          Your responses help us evaluate how well automated systems detect and
-          label polarizing language.
-        </p>
+
+        <ol className="list-decimal text-left ml-5 list-inside text-sm space-y-3">
+          <li>
+            Read the <strong>entire article</strong> shown on the screen.
+          </li>
+          <li>
+            Click each <strong>yellow highlighted passage</strong> to view its
+            category and subcategory.
+          </li>
+          <li>
+            Choose <strong>Agree</strong> when the annotation is correct or{" "}
+            <strong>Disagree</strong> when it is not.
+          </li>
+          <li>
+            After every highlight in the article has been answered, continue to
+            the next article.
+          </li>
+          <li>
+            Some proposed annotations may be incorrect, so evaluate each one
+            carefully rather than agreeing automatically.
+          </li>
+          <li>
+            You must score <strong>80% or higher overall</strong> to reach the
+            success screen.
+          </li>
+        </ol>
+
+        <div className="h-4" />
+
+        <div className="rounded-lg border border-gray-200 bg-white p-3 text-left text-xs text-gray-600">
+          <p className="mb-1">
+            <span className="inline-block w-4 h-4 bg-yellow-200 align-middle mr-2 rounded-sm" />
+            Unanswered annotation
+          </p>
+          <p className="mb-1">
+            <span className="inline-block w-4 h-4 bg-green-200 align-middle mr-2 rounded-sm" />
+            Agreed
+          </p>
+          <p>
+            <span className="inline-block w-4 h-4 bg-red-200 align-middle mr-2 rounded-sm" />
+            Disagreed
+          </p>
+        </div>
       </div>
 
-      {/* Hover tooltip that follows cursor over highlighted span */}
+      {/* Hover tooltip */}
       {hoverTooltip.visible && (
         <div
           style={{
@@ -1052,26 +1349,9 @@ function ToolMain() {
           }}
           className="bg-gray-900 text-white text-xs px-3 py-2 rounded shadow-lg max-w-xs"
         >
-          <div className="font-semibold">LLM label</div>
-          <div className="capitalize">{hoverTooltip.label}</div>
+          <div className="font-semibold">{hoverTooltip.category}</div>
+          <div>{hoverTooltip.subcategory}</div>
         </div>
-      )}
-
-      {/* Sticky Selected Text & Word Count (ORIGINAL, but unused in verification) */}
-      {(selectedText || wordCount > 0) && (
-        <div className="fixed bottom-4 right-4 bg-white shadow-lg rounded-lg p-4 border border-gray-300 w-64 z-50">
-          {selectedText && (
-            <p className="text-sm text-gray-700 mb-2 break-words">
-              <strong>Selected:</strong> "{selectedText}"
-            </p>
-          )}
-          {wordCount > 0 && (
-            <p className="text-xs text-green-600">Word Count: {wordCount}</p>
-          )}
-        
-      
-
-</div>
       )}
     </div>
   );
