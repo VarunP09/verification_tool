@@ -1,79 +1,11 @@
 /* eslint-disable no-unused-vars */
 /* eslint-disable react-hooks/exhaustive-deps */
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Button } from "../components/Button";
 import { Card } from "../components/Card";
 import { CardContent } from "../components/CardContent";
 
 import { database, ref, push } from "../../firebaseConfig";
-import instructionVid from "../../Videos/Instruction-Video.mov";
-
-/* -----------------------------
-   Intro Screen
------------------------------- */
-
-function IntroScreen({ onDone }) {
-  const [videoDuration, setVideoDuration] = useState(0);
-  const [watchedEnough, setWatchedEnough] = useState(false);
-  const videoRef = useRef(null);
-  const watchedSecondsRef = useRef(new Set());
-
-  const handleTimeUpdate = () => {
-    const v = videoRef.current;
-    if (!v) return;
-    const t = Math.floor(v.currentTime);
-    watchedSecondsRef.current.add(t);
-    if (videoDuration > 0) {
-      const ratio = watchedSecondsRef.current.size / Math.max(1, Math.floor(videoDuration));
-      if (ratio >= 0.98) setWatchedEnough(true);
-    }
-  };
-
-  const handleLoadedMeta = () => {
-    const v = videoRef.current;
-    if (!v) return;
-    setVideoDuration(v.duration || 0);
-  };
-
-  return (
-    <div className="min-h-screen w-full flex items-center justify-center bg-gray-100">
-      <div className="w-full max-w-3xl bg-white rounded-xl shadow p-6">
-        <h1 className="text-2xl font-bold text-center mb-4">
-          Video Tool Guide (Please watch before continuing)
-        </h1>
-
-        <video
-          ref={videoRef}
-          src={instructionVid}
-          controls
-          playsInline
-          className="block mx-auto w-full rounded-lg"
-          onLoadedMetadata={handleLoadedMeta}
-          onTimeUpdate={handleTimeUpdate}
-          onEnded={() => setWatchedEnough(true)}
-        />
-
-        <div className="mt-6 flex justify-center">
-          <button
-            className={
-              watchedEnough
-                ? "px-5 py-2 rounded text-white bg-blue-600 hover:bg-blue-700"
-                : "px-5 py-2 rounded text-white bg-gray-400 cursor-not-allowed"
-            }
-            disabled={!watchedEnough}
-            onClick={onDone}
-          >
-            Next: Start the Verification Tool
-          </button>
-        </div>
-
-        <p className="mt-3 text-xs text-center text-gray-500">
-          You must watch the full video before continuing.
-        </p>
-      </div>
-    </div>
-  );
-}
 
 /* -----------------------------
    Title formatting
@@ -1244,19 +1176,6 @@ function ToolMain() {
           </DropdownItem>
         </div>
 
-        <h3 className="text-lg font-bold mb-2">Video Tool Guide</h3>
-        {
-          <video
-            src={instructionVid}
-            controls
-            autoPlay
-            muted
-            playsInline
-            width="600"
-            height="300"
-            className="block mx-auto"
-          />
-        }
         <Button
           onClick={() => setShowRightInstructions(false)}
           className="bg-gray-600 text-white w-full"
@@ -1613,9 +1532,5 @@ function ToolMain() {
 ------------------------------ */
 
 export default function NewsAnnotationTool() {
-  const [introDone, setIntroDone] = useState(false);
-
-  if (!introDone) return <IntroScreen onDone={() => setIntroDone(true)} />;
-
   return <ToolMain />;
 }
