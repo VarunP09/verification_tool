@@ -896,7 +896,7 @@ function ToolMain() {
           )}
 
           <p className="text-gray-700 mb-3">
-            Copy and paste this completion code into MTurk:
+            Copy and paste this completion code into Prolific:
           </p>
 
           <div
