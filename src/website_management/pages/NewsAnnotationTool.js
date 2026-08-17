@@ -108,7 +108,7 @@ const getSubcategoryDefinition = (label) => {
 ------------------------------ */
 
 const TRAINING_SET_PATH = "/article_dataset_versions/TurkerTrainingSet.json";
-const PASSING_PERCENTAGE = 0.8;
+const PASSING_PERCENTAGE = 0.75;
 const SUCCESS_CODE = "CK0TZ6YK";
 const FAIL_CODE = "CK0TZ6YK";
 
