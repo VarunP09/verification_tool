@@ -895,6 +895,12 @@ function ToolMain() {
             </p>
           )}
 
+          {result.passed && (
+            <p className="mb-5 rounded-lg border border-green-200 bg-green-50 p-4 text-lg font-semibold text-green-800">
+              You successfully qualified, great job! Thank you for doing such a good job.
+            </p>
+          )}
+
           <p className="text-gray-700 mb-3">
             Copy and paste this completion code into Prolific:
           </p>
