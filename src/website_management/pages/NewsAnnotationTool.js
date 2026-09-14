@@ -6,6 +6,8 @@ import { Card } from "../components/Card";
 import { CardContent } from "../components/CardContent";
 
 import { database, ref, push } from "../../firebaseConfig";
+import { get, runTransaction } from "firebase/database";
+import Papa from "papaparse";
 
 /* -----------------------------
    Title formatting
@@ -107,7 +109,11 @@ const getSubcategoryDefinition = (label) => {
    Training-set loading + highlighting helpers
 ------------------------------ */
 
-const TRAINING_SET_PATH = "/article_dataset_versions/TurkerTrainingSet.json";
+const ARTICLE_CSV_PATH = "/article_dataset_versions/new_filtered_news_300_700_words.csv";
+const ANNOTATIONS_PATH = "/final_annotations.json";
+const ARTICLES_PER_PARTICIPANT = 5;
+const MAX_PER_ARTICLE = 3;
+const EXPECTED_ARTICLE_COUNT = 551;
 const PASSING_PERCENTAGE = 0.75;
 const SUCCESS_CODE = "CK0TZ6YK";
 const FAIL_CODE = "CK0TZ6YK";
@@ -216,91 +222,329 @@ function rangesOverlap(a, b) {
   return Math.max(a.start, b.start) < Math.min(a.end, b.end);
 }
 
-function prepareTrainingArticles(rawArticles) {
-  if (!Array.isArray(rawArticles)) {
-    throw new Error("TurkerTrainingSet.json must contain an array of articles.");
+
+function flattenAnnotationNode(node, inheritedParagraphIndex = null) {
+  if (node === null || node === undefined) return [];
+
+  if (Array.isArray(node)) {
+    return node.flatMap((item) =>
+      flattenAnnotationNode(item, inheritedParagraphIndex)
+    );
   }
 
-  return rawArticles.map((article, articleIndex) => {
-    const body = normalizeArticleBody(article.news_body);
-    const paragraphRanges = getParagraphRanges(body);
-    const usedRanges = [];
+  if (typeof node !== "object") return [];
 
-    const prepareAnnotationList = (sourceAnnotations, annotationType) =>
-      (Array.isArray(sourceAnnotations) ? sourceAnnotations : []).map(
-        (annotation, annotationIndex) => {
-          const annotationText = (annotation.text || "").toString();
-          const paragraphIndex = Number(annotation.paragraph_index);
-          const allMatches = findAllCaseInsensitiveMatches(body, annotationText);
-          const requestedParagraph = paragraphRanges.find(
-            (paragraph) => paragraph.paragraphIndex === paragraphIndex
-          );
+  const looksLikeAnnotation =
+    "text" in node ||
+    "span" in node ||
+    "highlight" in node ||
+    "highlighted_text" in node ||
+    "subcategory" in node ||
+    "category" in node;
 
-          const preferredMatches = requestedParagraph
-            ? allMatches.filter(
-                (match) =>
-                  match.start >= requestedParagraph.start &&
-                  match.end <= requestedParagraph.end
-              )
-            : [];
+  if (looksLikeAnnotation) {
+    const rawParagraphIndex =
+      node.paragraph_index ??
+      node.paragraphIndex ??
+      inheritedParagraphIndex ??
+      0;
 
-          const orderedMatches = [
-            ...preferredMatches,
-            ...allMatches.filter(
-              (match) =>
-                !preferredMatches.some(
-                  (preferred) =>
-                    preferred.start === match.start &&
-                    preferred.end === match.end
-                )
-            ),
-          ];
+    return [
+      {
+        text:
+          node.text ??
+          node.span ??
+          node.highlight ??
+          node.highlighted_text ??
+          "",
+        category:
+          node.category ??
+          node.parent_category ??
+          node.high_level_category ??
+          "",
+        subcategory:
+          node.subcategory ??
+          node.label ??
+          node.predicted_subcategory ??
+          "",
+        paragraph_index: Number(rawParagraphIndex),
+      },
+    ];
+  }
 
-          const unusedMatch = orderedMatches.find(
-            (match) => !usedRanges.some((used) => rangesOverlap(match, used))
-          );
-          const chosenMatch = unusedMatch || orderedMatches[0] || null;
+  return Object.entries(node).flatMap(([key, value]) => {
+    const nextParagraphIndex =
+      /^\d+$/.test(key) ? Number(key) : inheritedParagraphIndex;
+    return flattenAnnotationNode(value, nextParagraphIndex);
+  });
+}
 
-          if (chosenMatch) {
-            usedRanges.push(chosenMatch);
-          }
+function getAnnotationsForArticle(rawAnnotations, articleIndex, articleTitle) {
+  if (!rawAnnotations) return [];
 
-          return {
-            id: `${articleIndex}-${annotationType}-${annotationIndex}`,
-            articleIndex,
-            annotationIndex,
-            annotationType,
-            paragraphIndex,
-            text: annotationText,
-            category: (annotation.category || "").toString(),
-            subcategory: (annotation.subcategory || "").toString(),
-            start: chosenMatch?.start ?? null,
-            end: chosenMatch?.end ?? null,
-          };
+  // Common format 1: array with one record per article.
+  if (Array.isArray(rawAnnotations)) {
+    const direct = rawAnnotations[articleIndex];
+
+    if (direct && typeof direct === "object") {
+      if (Array.isArray(direct.annotations)) {
+        return flattenAnnotationNode(direct.annotations);
+      }
+      if (Array.isArray(direct.llm_annotations)) {
+        return flattenAnnotationNode(direct.llm_annotations);
+      }
+      if (Array.isArray(direct.final_annotations)) {
+        return flattenAnnotationNode(direct.final_annotations);
+      }
+
+      const directFlattened = flattenAnnotationNode(direct);
+      if (directFlattened.length > 0) return directFlattened;
+    }
+
+    // Common format 2: flat list where each annotation stores its article index.
+    const filtered = rawAnnotations.filter((entry) => {
+      if (!entry || typeof entry !== "object") return false;
+      const idx =
+        entry.article_index ??
+        entry.articleIndex ??
+        entry.article_id ??
+        entry.articleId;
+      return Number(idx) === articleIndex;
+    });
+
+    if (filtered.length > 0) return flattenAnnotationNode(filtered);
+  }
+
+  // Common format 3: object keyed by article index.
+  if (typeof rawAnnotations === "object") {
+    const containers = [
+      rawAnnotations,
+      rawAnnotations.articles,
+      rawAnnotations.annotations,
+      rawAnnotations.final_annotations,
+    ].filter(Boolean);
+
+    for (const container of containers) {
+      const byIndex =
+        container?.[articleIndex] ??
+        container?.[String(articleIndex)];
+
+      if (byIndex !== undefined) {
+        if (Array.isArray(byIndex?.annotations)) {
+          return flattenAnnotationNode(byIndex.annotations);
         }
+        return flattenAnnotationNode(byIndex);
+      }
+    }
+
+    // Fallback: object keyed by exact article title.
+    if (articleTitle && rawAnnotations[articleTitle] !== undefined) {
+      return flattenAnnotationNode(rawAnnotations[articleTitle]);
+    }
+  }
+
+  return [];
+}
+
+
+function normalizeAnnotationLabel(value) {
+  return (value || "")
+    .toString()
+    .trim()
+    .toLowerCase()
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ");
+}
+
+function isNoPolarizingAnnotation(annotation) {
+  const category = normalizeAnnotationLabel(annotation?.category);
+  const subcategory = normalizeAnnotationLabel(annotation?.subcategory);
+  const text = normalizeAnnotationLabel(annotation?.text);
+
+  return (
+    category === "no polarizing language" ||
+    subcategory === "no polarizing language" ||
+    text === "no polarizing language selected"
+  );
+}
+
+function prepareStudyArticle(csvRow, articleIndex, rawAnnotations) {
+  const title = (csvRow?.["Headline"] || csvRow?.headline || "").toString();
+  const body = normalizeArticleBody(
+    csvRow?.["News body"] ??
+      csvRow?.news_body ??
+      csvRow?.body ??
+      ""
+  );
+
+  const paragraphRanges = getParagraphRanges(body);
+  const sourceAnnotations = getAnnotationsForArticle(
+    rawAnnotations,
+    articleIndex,
+    title
+  );
+
+  // "No polarizing language" is not treated as a normal span annotation.
+  // If it appears alongside any real annotation, simply ignore it.
+  const noPolarizingAnnotations = sourceAnnotations.filter(
+    isNoPolarizingAnnotation
+  );
+  const polarizingAnnotations = sourceAnnotations.filter(
+    (annotation) => !isNoPolarizingAnnotation(annotation)
+  );
+
+  // An article counts as entirely "No Polarizing Language" only when:
+  // 1) there are no other annotation categories anywhere in the article, and
+  // 2) every non-empty paragraph has a No Polarizing Language annotation.
+  const noPolarizingParagraphs = new Set(
+    noPolarizingAnnotations.map((annotation) =>
+      Number(annotation.paragraph_index ?? 0)
+    )
+  );
+  const nonEmptyParagraphs = paragraphRanges.filter(
+    (paragraph) => paragraph.text.trim().length > 0
+  );
+
+  const wholeArticleNoPolarizing =
+    noPolarizingAnnotations.length > 0 &&
+    polarizingAnnotations.length === 0 &&
+    nonEmptyParagraphs.length > 0 &&
+    nonEmptyParagraphs.every((paragraph) =>
+      noPolarizingParagraphs.has(paragraph.paragraphIndex)
+    );
+
+  const usedRanges = [];
+
+  const annotations = polarizingAnnotations.map(
+    (annotation, annotationIndex) => {
+      const annotationText = (annotation.text || "").toString();
+      const paragraphIndex = Number(annotation.paragraph_index ?? 0);
+
+      const allMatches = findAllCaseInsensitiveMatches(body, annotationText);
+      const requestedParagraph = paragraphRanges.find(
+        (paragraph) => paragraph.paragraphIndex === paragraphIndex
       );
 
-    // Regular annotations can add one point when accepted. False annotations
-    // are shown identically, but accepting one subtracts one point.
-    const regularAnnotations = prepareAnnotationList(
-      article.annotations,
-      "regular"
-    );
-    const falseAnnotations = prepareAnnotationList(
-      article.false_annotations,
-      "false"
+      const preferredMatches = requestedParagraph
+        ? allMatches.filter(
+            (match) =>
+              match.start >= requestedParagraph.start &&
+              match.end <= requestedParagraph.end
+          )
+        : [];
+
+      const orderedMatches = [
+        ...preferredMatches,
+        ...allMatches.filter(
+          (match) =>
+            !preferredMatches.some(
+              (preferred) =>
+                preferred.start === match.start &&
+                preferred.end === match.end
+            )
+        ),
+      ];
+
+      const unusedMatch = orderedMatches.find(
+        (match) => !usedRanges.some((used) => rangesOverlap(match, used))
+      );
+      const chosenMatch = unusedMatch || orderedMatches[0] || null;
+
+      if (chosenMatch) usedRanges.push(chosenMatch);
+
+      return {
+        id: `${articleIndex}-annotation-${annotationIndex}`,
+        articleIndex,
+        annotationIndex,
+        annotationType: "regular",
+        paragraphIndex,
+        text: annotationText,
+        category: (annotation.category || "").toString(),
+        subcategory: (annotation.subcategory || "").toString(),
+        start: chosenMatch?.start ?? null,
+        end: chosenMatch?.end ?? null,
+      };
+    }
+  );
+
+  // For an article that is entirely marked No Polarizing Language, create one
+  // article-level verification item. It is intentionally not rendered as a
+  // highlight; the user answers the article-level question after reading.
+  if (wholeArticleNoPolarizing) {
+    annotations.push({
+      id: `${articleIndex}-whole-article-no-polarizing`,
+      articleIndex,
+      annotationIndex: 0,
+      annotationType: "regular",
+      paragraphIndex: null,
+      text: "Entire article",
+      category: "No Polarizing Language",
+      subcategory: "No Polarizing Language",
+      start: null,
+      end: null,
+      wholeArticleNoPolarizing: true,
+    });
+  }
+
+  return {
+    id: articleIndex,
+    title,
+    body,
+    paragraphRanges,
+    regularAnnotationCount: annotations.length,
+    falseAnnotationCount: 0,
+    annotations,
+    wholeArticleNoPolarizing,
+  };
+}
+
+async function assignRandomArticleIndices(totalArticles) {
+  const usageRef = ref(database, "articleUsage");
+  let assignedIndices = [];
+
+  const result = await runTransaction(usageRef, (current) => {
+    const usage = current ?? {};
+
+    // Ensure Firebase has one counter for every article.
+    for (let i = 0; i < totalArticles; i++) {
+      if (usage[i] === undefined) usage[i] = 0;
+    }
+
+    const available = [];
+    for (let i = 0; i < totalArticles; i++) {
+      if ((usage[i] ?? 0) < MAX_PER_ARTICLE) {
+        available.push(i);
+      }
+    }
+
+    if (available.length === 0) {
+      assignedIndices = [];
+      return;
+    }
+
+    // Fisher-Yates shuffle, then take up to five distinct available articles.
+    for (let i = available.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [available[i], available[j]] = [available[j], available[i]];
+    }
+
+    assignedIndices = available.slice(
+      0,
+      Math.min(ARTICLES_PER_PARTICIPANT, available.length)
     );
 
-    return {
-      id: articleIndex,
-      title: (article.title || "").toString(),
-      body,
-      paragraphRanges,
-      regularAnnotationCount: regularAnnotations.length,
-      falseAnnotationCount: falseAnnotations.length,
-      annotations: [...regularAnnotations, ...falseAnnotations],
-    };
+    assignedIndices.forEach((index) => {
+      usage[index] = (usage[index] ?? 0) + 1;
+    });
+
+    return usage;
   });
+
+  if (!result.committed || assignedIndices.length === 0) {
+    return [];
+  }
+
+  return assignedIndices;
 }
 
 function calculateScore(articles, responses) {
@@ -348,49 +592,87 @@ function ToolMain() {
   useEffect(() => {
     let cancelled = false;
 
-    async function loadTrainingSet() {
+    async function loadAssignedArticles() {
       try {
         setLoading(true);
         setLoadError("");
 
-        const response = await fetch(TRAINING_SET_PATH);
-        if (!response.ok) {
+        const [csvResponse, annotationResponse] = await Promise.all([
+          fetch(ARTICLE_CSV_PATH),
+          fetch(ANNOTATIONS_PATH),
+        ]);
+
+        if (!csvResponse.ok) {
           throw new Error(
-            `Could not load ${TRAINING_SET_PATH} (HTTP ${response.status}).`
+            `Could not load ${ARTICLE_CSV_PATH} (HTTP ${csvResponse.status}).`
           );
         }
 
-        const rawArticles = await response.json();
-        const preparedArticles = prepareTrainingArticles(rawArticles);
-
-        if (preparedArticles.length === 0) {
-          throw new Error("The training set does not contain any articles.");
+        if (!annotationResponse.ok) {
+          throw new Error(
+            `Could not load ${ANNOTATIONS_PATH} (HTTP ${annotationResponse.status}).`
+          );
         }
 
-        const totalPossiblePoints = preparedArticles.reduce(
-          (sum, article) => sum + article.regularAnnotationCount,
-          0
-        );
-        const totalReviewAnnotations = preparedArticles.reduce(
-          (sum, article) => sum + article.annotations.length,
-          0
+        const [csvText, rawAnnotations] = await Promise.all([
+          csvResponse.text(),
+          annotationResponse.json(),
+        ]);
+
+        const csvRows = await new Promise((resolve, reject) => {
+          Papa.parse(csvText, {
+            header: true,
+            skipEmptyLines: true,
+            complete: (results) => {
+              if (results.errors?.length) {
+                console.warn("CSV parse warnings:", results.errors);
+              }
+              resolve(results.data || []);
+            },
+            error: reject,
+          });
+        });
+
+        if (csvRows.length === 0) {
+          throw new Error("The article CSV does not contain any articles.");
+        }
+
+        if (csvRows.length !== EXPECTED_ARTICLE_COUNT) {
+          console.warn(
+            `Expected ${EXPECTED_ARTICLE_COUNT} articles, but loaded ${csvRows.length}. articleUsage will follow the loaded CSV length.`
+          );
+        }
+
+        // Atomically reserve up to five random articles that have each been
+        // assigned fewer than three times. The articleUsage counters are
+        // incremented immediately when this participant enters the task.
+        const assignedIndices = await assignRandomArticleIndices(csvRows.length);
+
+        if (assignedIndices.length === 0) {
+          throw new Error(
+            "This task is full"
+          );
+        }
+
+        const preparedArticles = assignedIndices.map((articleIndex) =>
+          prepareStudyArticle(csvRows[articleIndex], articleIndex, rawAnnotations)
         );
 
-        if (totalPossiblePoints === 0 || totalReviewAnnotations === 0) {
-          throw new Error("The training set does not contain any annotations.");
+        if (preparedArticles.some((article) => article.annotations.length === 0)) {
+          console.warn(
+            "At least one assigned article has no annotations in final_annotations.json."
+          );
         }
 
         if (!cancelled) {
-          // Randomize the four-article presentation order once per participant.
-          // Annotation IDs retain their original article indices, so scoring and
-          // Firebase response records remain stable regardless of presentation order.
-          setTrainingArticles(shuffleArticles(preparedArticles));
+          // Keep the randomized assignment order returned by Firebase.
+          setTrainingArticles(preparedArticles);
         }
       } catch (error) {
         if (!cancelled) {
           setLoadError(
             error?.message ||
-              "The training set could not be loaded. Please refresh and try again."
+              "The study articles could not be loaded. Please refresh and try again."
           );
         }
       } finally {
@@ -400,7 +682,7 @@ function ToolMain() {
       }
     }
 
-    loadTrainingSet();
+    loadAssignedArticles();
 
     return () => {
       cancelled = true;
@@ -833,13 +1115,9 @@ function ToolMain() {
       <div className="min-h-screen w-full flex items-center justify-center bg-gray-100">
         <div className="w-full max-w-2xl bg-white rounded-xl shadow p-8 text-center">
           <h1 className="text-2xl font-bold text-red-700 mb-3">
-            Training Set Could Not Be Loaded
+            Study Articles Could Not Be Loaded
           </h1>
           <p className="text-gray-700 mb-4">{loadError}</p>
-          <p className="text-sm text-gray-500">
-            Confirm that TurkerTrainingSet.json is available at{" "}
-            <code>{TRAINING_SET_PATH}</code>.
-          </p>
         </div>
       </div>
     );
@@ -925,7 +1203,9 @@ function ToolMain() {
 
   const unmatchedAnnotations =
     currentArticle?.annotations.filter(
-      (annotation) => annotation.start === null || annotation.end === null
+      (annotation) =>
+        !annotation.wholeArticleNoPolarizing &&
+        (annotation.start === null || annotation.end === null)
     ) || [];
 
   return (
@@ -1235,6 +1515,74 @@ function ToolMain() {
                 {currentArticle.paragraphRanges.map(renderParagraph)}
               </div>
 
+              {currentArticle.wholeArticleNoPolarizing &&
+                currentArticle.annotations.find(
+                  (annotation) => annotation.wholeArticleNoPolarizing
+                ) && (() => {
+                  const noPolarizingAnnotation = currentArticle.annotations.find(
+                    (annotation) => annotation.wholeArticleNoPolarizing
+                  );
+                  const existingResponse = responses[noPolarizingAnnotation.id];
+
+                  return (
+                    <div className="mt-8 rounded-xl border border-gray-200 bg-gray-50 p-5 text-center">
+                      <h3 className="text-lg font-bold text-gray-900 mb-3">
+                        Article-Level Verification
+                      </h3>
+                      <p className="text-gray-700 mb-5"> 
+                        Do you think that there is no<strong> polarizing language</strong> anywhere in this article?
+                      </p>
+
+                      <div className="flex justify-center gap-4">
+                        <Button
+                          onClick={() =>
+                            setResponses((previous) => ({
+                              ...previous,
+                              [noPolarizingAnnotation.id]: "disagree",
+                            }))
+                          }
+                          disabled={!!existingResponse}
+                          className={
+                            existingResponse === "disagree"
+                              ? "bg-red-600 text-white px-5 py-2 rounded"
+                              : existingResponse
+                              ? "bg-gray-300 text-gray-500 px-5 py-2 rounded cursor-not-allowed"
+                              : "bg-red-500 hover:bg-red-600 text-white px-5 py-2 rounded"
+                          }
+                        >
+                          Disagree
+                        </Button>
+
+                        <Button
+                          onClick={() =>
+                            setResponses((previous) => ({
+                              ...previous,
+                              [noPolarizingAnnotation.id]: "agree",
+                            }))
+                          }
+                          disabled={!!existingResponse}
+                          className={
+                            existingResponse === "agree"
+                              ? "bg-emerald-700 text-white px-5 py-2 rounded"
+                              : existingResponse
+                              ? "bg-gray-300 text-gray-500 px-5 py-2 rounded cursor-not-allowed"
+                              : "bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2 rounded"
+                          }
+                        >
+                          Agree
+                        </Button>
+                      </div>
+
+                      {existingResponse && (
+                        <p className="mt-3 text-sm font-semibold text-gray-600">
+                          Response recorded:{" "}
+                          {existingResponse === "agree" ? "Agree" : "Disagree"}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })()}
+
               {unmatchedAnnotations.length > 0 && (
                 <div className="mt-6 rounded-lg border border-orange-300 bg-orange-50 p-4 text-left">
                   <p className="font-semibold text-orange-900 mb-2">
@@ -1243,7 +1591,7 @@ function ToolMain() {
                   <p className="text-sm text-orange-800 mb-3">
                     The following annotation text could not be matched
                     automatically in the article. Review each item directly so
-                    the training can still be completed.
+                    the task can still be completed.
                   </p>
 
                   <div className="space-y-2">
