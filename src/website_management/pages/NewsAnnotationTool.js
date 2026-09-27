@@ -319,7 +319,7 @@ function calculateScore(articles, responses) {
    Main Tool (full-article training verification)
 ------------------------------ */
 
-function ToolMain({ newsFrequency, backgroundResponses }) {
+function ToolMain({ newsFrequency, backgroundResponses, prolificId }) {
   const [openDropdown, setOpenDropdown] = useState(null);
   const [showRightInstructions, setShowRightInstructions] = useState(true);
 
@@ -678,6 +678,7 @@ function ToolMain({ newsFrequency, backgroundResponses }) {
 
     try {
       await push(ref(database, "trainingSubmissions"), {
+        prolificId: prolificId.trim(),
         score: scoreAtFailure,
         totalPossible: totalPossiblePoints,
         totalAnnotationsReviewed: totalReviewAnnotations,
@@ -744,6 +745,7 @@ function ToolMain({ newsFrequency, backgroundResponses }) {
       setSubmitError("");
 
       await push(ref(database, "trainingSubmissions"), {
+        prolificId: prolificId.trim(),
         score: finalScore,
         totalPossible: totalPossiblePoints,
         totalAnnotationsReviewed: totalReviewAnnotations,
@@ -1542,6 +1544,7 @@ function ToolMain({ newsFrequency, backgroundResponses }) {
 ------------------------------ */
 
 export default function NewsAnnotationTool() {
+  const [prolificId, setProlificId] = useState("");
   const [newsFrequency, setNewsFrequency] = useState("");
   const [eligibility, setEligibility] = useState(null);
   const [backgroundResponses, setBackgroundResponses] = useState({
@@ -1554,6 +1557,7 @@ export default function NewsAnnotationTool() {
   const [backgroundComplete, setBackgroundComplete] = useState(false);
 
   const backgroundAnswered =
+    prolificId.trim().length > 0 &&
     [1, 2, 3, 4, 5, 6, 7].includes(backgroundResponses.politicalNewsFrequency) &&
     backgroundResponses.newsSources.trim().length > 0 &&
     [1, 2, 3, 4, 5, 6, 7].includes(backgroundResponses.languageEvaluationConfidence) &&
@@ -1563,6 +1567,7 @@ export default function NewsAnnotationTool() {
   function submitBackground(event) {
     event.preventDefault();
     if (eligibility !== true || !backgroundAnswered) return;
+    setProlificId(prolificId.trim());
     setBackgroundResponses((previous) => ({
       ...previous,
       newsSources: previous.newsSources.trim(),
@@ -1635,6 +1640,7 @@ export default function NewsAnnotationTool() {
   if (eligibility === true && backgroundComplete) {
     return (
       <ToolMain
+        prolificId={prolificId}
         newsFrequency={newsFrequency}
         backgroundResponses={backgroundResponses}
       />
@@ -1675,10 +1681,34 @@ export default function NewsAnnotationTool() {
             A few questions before you begin
           </h1>
           <p className="mb-6 text-gray-600">
-            Please answer all five questions. These background questions do not
+            Please enter your Prolific ID and answer all five questions. These background questions do not
             affect your eligibility for the study.
           </p>
           <div className="space-y-8">
+            <div>
+              <label
+                htmlFor="prolific-id"
+                className="mb-3 block text-lg font-semibold text-gray-900"
+              >
+                What is your Prolific ID?
+              </label>
+              <input
+                id="prolific-id"
+                name="prolificId"
+                type="text"
+                value={prolificId}
+                onChange={(event) => setProlificId(event.target.value)}
+                required
+                autoComplete="off"
+                autoCapitalize="none"
+                spellCheck={false}
+                aria-describedby="prolific-id-help"
+                className="w-full rounded-md border border-gray-300 p-3 text-gray-800"
+              />
+              <p id="prolific-id-help" className="mt-2 text-sm text-gray-600">
+                Please copy and paste your Prolific ID.
+              </p>
+            </div>
             {renderBackgroundScale(
               "politicalNewsFrequency",
               "1. How often do you follow political or public-affairs news?",
