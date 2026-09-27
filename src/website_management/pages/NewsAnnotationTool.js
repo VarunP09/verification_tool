@@ -109,8 +109,8 @@ const getSubcategoryDefinition = (label) => {
 
 const TRAINING_SET_PATH = "/article_dataset_versions/TurkerTrainingSet.json";
 const PASSING_PERCENTAGE = 0.75;
-const SUCCESS_CODE = "CK0TZ6YK";
-const FAIL_CODE = "CK0TZ6YK";
+const SUCCESS_CODE = "CQ1VMX6D";
+const FAIL_CODE = "CQ00QK5R";
 
 const ATTENTION_CHECKS = [
   {
@@ -319,7 +319,7 @@ function calculateScore(articles, responses) {
    Main Tool (full-article training verification)
 ------------------------------ */
 
-function ToolMain() {
+function ToolMain({ newsFrequency, backgroundResponses }) {
   const [openDropdown, setOpenDropdown] = useState(null);
   const [showRightInstructions, setShowRightInstructions] = useState(true);
 
@@ -693,6 +693,8 @@ function ToolMain() {
           correctAnswer: check.correctAnswer,
         })),
         attentionCheckResponses,
+        newsFrequency,
+        backgroundResponses,
         articlePresentationOrder: trainingArticles.map((article, position) => ({
           position: position + 1,
           articleIndex: article.id,
@@ -749,6 +751,8 @@ function ToolMain() {
         passed,
         failedAttentionCheck: false,
         attentionCheckResponses,
+        newsFrequency,
+        backgroundResponses,
         completionCode,
         articlePresentationOrder: trainingArticles.map((article, position) => ({
           position: position + 1,
@@ -901,23 +905,23 @@ function ToolMain() {
             </p>
           )}
 
-          <p className="text-gray-700 mb-3">
-            Copy and paste this completion code into Prolific:
-          </p>
-
-          <div
-            className={`text-lg font-mono p-4 rounded border border-dashed mb-4 ${
-              result.passed
-                ? "bg-green-50 border-green-400"
-                : "bg-red-50 border-red-400"
-            }`}
+          <button
+            type="button"
+            disabled={result.saving || !!result.saveError}
+            onClick={() => {
+              if (result.saving || result.saveError) return;
+              window.location.assign(
+                `https://app.prolific.com/submissions/complete?cc=${result.completionCode}`
+              );
+            }}
+            className={
+              result.saving || result.saveError
+                ? "bg-gray-400 text-white px-6 py-2 rounded cursor-not-allowed"
+                : "bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded"
+            }
           >
-            {result.completionCode}
-          </div>
-
-          <p className="text-sm text-gray-500">
-            You may now close this window or return to the task page.
-          </p>
+            Return to Prolific
+          </button>
         </div>
       </div>
     );
@@ -1538,5 +1542,236 @@ function ToolMain() {
 ------------------------------ */
 
 export default function NewsAnnotationTool() {
-  return <ToolMain />;
+  const [newsFrequency, setNewsFrequency] = useState("");
+  const [eligibility, setEligibility] = useState(null);
+  const [backgroundResponses, setBackgroundResponses] = useState({
+    politicalNewsFrequency: "",
+    newsSources: "",
+    languageEvaluationConfidence: "",
+  });
+  const [backgroundComplete, setBackgroundComplete] = useState(false);
+
+  const backgroundAnswered =
+    [1, 2, 3, 4, 5, 6, 7].includes(backgroundResponses.politicalNewsFrequency) &&
+    backgroundResponses.newsSources.trim().length > 0 &&
+    [1, 2, 3, 4, 5, 6, 7].includes(backgroundResponses.languageEvaluationConfidence);
+
+  function submitBackground(event) {
+    event.preventDefault();
+    if (eligibility !== true || !backgroundAnswered) return;
+    setBackgroundResponses((previous) => ({
+      ...previous,
+      newsSources: previous.newsSources.trim(),
+    }));
+    setBackgroundComplete(true);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function renderBackgroundScale(field, question, lowLabel, highLabel) {
+    return (
+      <fieldset>
+        <legend className="mb-3 text-lg font-semibold text-gray-900">
+          {question}
+        </legend>
+        <div className="mb-2 flex justify-between gap-4 text-sm text-gray-600">
+          <span>1 — {lowLabel}</span>
+          <span className="text-right">7 — {highLabel}</span>
+        </div>
+        <div className="grid grid-cols-7 gap-1 sm:gap-2">
+          {[1, 2, 3, 4, 5, 6, 7].map((value) => (
+            <label
+              key={value}
+              className="flex cursor-pointer flex-col items-center gap-2 rounded-md border border-gray-200 py-3 text-gray-800 hover:bg-gray-50"
+            >
+              <span>{value}</span>
+              <input
+                type="radio"
+                name={field}
+                value={value}
+                checked={backgroundResponses[field] === value}
+                onChange={() =>
+                  setBackgroundResponses((previous) => ({
+                    ...previous,
+                    [field]: value,
+                  }))
+                }
+                aria-label={`${value}${value === 1 ? ` — ${lowLabel}` : value === 7 ? ` — ${highLabel}` : ""}`}
+                required
+                className="h-4 w-4"
+              />
+            </label>
+          ))}
+        </div>
+      </fieldset>
+    );
+  }
+
+  const newsFrequencyOptions = [
+    "Every day",
+    "Several times a week",
+    "About once a week",
+    "Less than once a week",
+    "Never",
+  ];
+
+  function submitEligibility(event) {
+    event.preventDefault();
+    if (!newsFrequencyOptions.includes(newsFrequency)) return;
+
+    const eligibleAnswers = [
+      "Every day",
+      "Several times a week",
+      "About once a week",
+    ];
+    setEligibility(eligibleAnswers.includes(newsFrequency));
+  }
+
+  // Background answers are required but do not determine eligibility or score.
+  // Articles load only after screening and the background questions are complete.
+  if (eligibility === true && backgroundComplete) {
+    return (
+      <ToolMain
+        newsFrequency={newsFrequency}
+        backgroundResponses={backgroundResponses}
+      />
+    );
+  }
+
+  if (eligibility === false) {
+    return (
+      <div className="min-h-screen w-full flex items-center justify-center bg-gray-100 p-4">
+        <div className="w-full max-w-2xl bg-white rounded-xl shadow p-8 text-center">
+          <h1 className="text-2xl font-bold text-gray-900 mb-6">
+            You are not eligible for this study.
+          </h1>
+          <button
+            type="button"
+            onClick={() =>
+              window.location.assign(
+                "https://app.prolific.com/submissions/complete?cc=C1M4X6HB"
+              )
+            }
+            className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded"
+          >
+            Return to Prolific
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (eligibility === true) {
+    return (
+      <div className="min-h-screen w-full flex items-center justify-center bg-gray-100 p-4">
+        <form
+          onSubmit={submitBackground}
+          className="w-full max-w-2xl bg-white rounded-xl shadow p-8"
+        >
+          <h1 className="mb-3 text-2xl font-bold text-gray-900">
+            A few questions before you begin
+          </h1>
+          <p className="mb-6 text-gray-600">
+            Please answer all three questions. These background questions do not
+            affect your eligibility for the study.
+          </p>
+          <div className="space-y-8">
+            {renderBackgroundScale(
+              "politicalNewsFrequency",
+              "1. How often do you follow political or public-affairs news?",
+              "Never",
+              "Always"
+            )}
+            <div>
+              <label
+                htmlFor="background-news-sources"
+                className="mb-3 block text-lg font-semibold text-gray-900"
+              >
+                2. Where do you usually obtain news?
+              </label>
+              <textarea
+                id="background-news-sources"
+                name="newsSources"
+                rows={4}
+                value={backgroundResponses.newsSources}
+                onChange={(event) =>
+                  setBackgroundResponses((previous) => ({
+                    ...previous,
+                    newsSources: event.target.value,
+                  }))
+                }
+                required
+                className="w-full rounded-md border border-gray-300 p-3 text-gray-800"
+              />
+            </div>
+            {renderBackgroundScale(
+              "languageEvaluationConfidence",
+              "3. How confident do you feel evaluating persuasive or inflammatory language?",
+              "Not at all confident",
+              "Extremely confident"
+            )}
+          </div>
+          <div className="mt-6 text-center">
+            <button
+              type="submit"
+              disabled={!backgroundAnswered}
+              className={
+                backgroundAnswered
+                  ? "bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded"
+                  : "bg-gray-400 text-white px-6 py-2 rounded cursor-not-allowed"
+              }
+            >
+              Continue to Qualification Task
+            </button>
+          </div>
+        </form>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen w-full flex items-center justify-center bg-gray-100 p-4">
+      <form
+        onSubmit={submitEligibility}
+        className="w-full max-w-2xl bg-white rounded-xl shadow p-8"
+      >
+        <fieldset>
+          <legend className="text-2xl font-bold text-gray-900 mb-6">
+            How often do you read, watch, or listen to news from any source?
+          </legend>
+          <div className="space-y-3">
+            {newsFrequencyOptions.map((option) => (
+              <label
+                key={option}
+                className="flex cursor-pointer items-center gap-3 rounded-md border border-gray-200 px-4 py-3 text-gray-800 hover:bg-gray-50"
+              >
+                <input
+                  type="radio"
+                  name="news-frequency"
+                  value={option}
+                  checked={newsFrequency === option}
+                  onChange={() => setNewsFrequency(option)}
+                  required
+                  className="h-4 w-4"
+                />
+                <span>{option}</span>
+              </label>
+            ))}
+          </div>
+        </fieldset>
+        <div className="mt-6 text-center">
+          <button
+            type="submit"
+            disabled={!newsFrequency}
+            className={
+              newsFrequency
+                ? "bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded"
+                : "bg-gray-400 text-white px-6 py-2 rounded cursor-not-allowed"
+            }
+          >
+            Continue
+          </button>
+        </div>
+      </form>
+    </div>
+  );
 }
