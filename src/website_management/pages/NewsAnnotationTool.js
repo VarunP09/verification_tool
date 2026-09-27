@@ -1548,13 +1548,17 @@ export default function NewsAnnotationTool() {
     politicalNewsFrequency: "",
     newsSources: "",
     languageEvaluationConfidence: "",
+    identificationConfidenceAgreement: "",
+    priorTrainingExperience: "",
   });
   const [backgroundComplete, setBackgroundComplete] = useState(false);
 
   const backgroundAnswered =
     [1, 2, 3, 4, 5, 6, 7].includes(backgroundResponses.politicalNewsFrequency) &&
     backgroundResponses.newsSources.trim().length > 0 &&
-    [1, 2, 3, 4, 5, 6, 7].includes(backgroundResponses.languageEvaluationConfidence);
+    [1, 2, 3, 4, 5, 6, 7].includes(backgroundResponses.languageEvaluationConfidence) &&
+    [1, 2, 3, 4, 5, 6, 7].includes(backgroundResponses.identificationConfidenceAgreement) &&
+    ["Yes", "No", "Not sure"].includes(backgroundResponses.priorTrainingExperience);
 
   function submitBackground(event) {
     event.preventDefault();
@@ -1671,7 +1675,7 @@ export default function NewsAnnotationTool() {
             A few questions before you begin
           </h1>
           <p className="mb-6 text-gray-600">
-            Please answer all three questions. These background questions do not
+            Please answer all five questions. These background questions do not
             affect your eligibility for the study.
           </p>
           <div className="space-y-8">
@@ -1709,6 +1713,81 @@ export default function NewsAnnotationTool() {
               "Not at all confident",
               "Extremely confident"
             )}
+            <fieldset>
+              <legend className="mb-3 text-lg font-semibold text-gray-900">
+                4. Please indicate how much you agree or disagree with the following statement:
+              </legend>
+              <p className="mb-4 font-semibold italic text-gray-900">
+                I am confident in my ability to accurately identify persuasive,
+                emotionally charged, or inflammatory language in news articles.
+              </p>
+              <div className="space-y-2">
+                {[
+                  "Strongly disagree",
+                  "Disagree",
+                  "Somewhat disagree",
+                  "Neither agree nor disagree",
+                  "Somewhat agree",
+                  "Agree",
+                  "Strongly agree",
+                ].map((label, index) => {
+                  const value = index + 1;
+                  return (
+                    <label
+                      key={value}
+                      className="flex cursor-pointer items-center gap-3 rounded-md border border-gray-200 px-4 py-3 text-gray-800 hover:bg-gray-50"
+                    >
+                      <input
+                        type="radio"
+                        name="identificationConfidenceAgreement"
+                        value={value}
+                        checked={backgroundResponses.identificationConfidenceAgreement === value}
+                        onChange={() =>
+                          setBackgroundResponses((previous) => ({
+                            ...previous,
+                            identificationConfidenceAgreement: value,
+                          }))
+                        }
+                        required
+                        className="h-4 w-4"
+                      />
+                      <span>{value}. {label}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </fieldset>
+            <fieldset>
+              <legend className="mb-3 text-lg font-semibold text-gray-900">
+                5. Have you previously received training or professional experience
+                in journalism, communication, political science, fact-checking, or
+                media analysis?
+              </legend>
+              <div className="space-y-2">
+                {["Yes", "No", "Not sure"].map((option) => (
+                  <label
+                    key={option}
+                    className="flex cursor-pointer items-center gap-3 rounded-md border border-gray-200 px-4 py-3 text-gray-800 hover:bg-gray-50"
+                  >
+                    <input
+                      type="radio"
+                      name="priorTrainingExperience"
+                      value={option}
+                      checked={backgroundResponses.priorTrainingExperience === option}
+                      onChange={() =>
+                        setBackgroundResponses((previous) => ({
+                          ...previous,
+                          priorTrainingExperience: option,
+                        }))
+                      }
+                      required
+                      className="h-4 w-4"
+                    />
+                    <span>{option}</span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
           </div>
           <div className="mt-6 text-center">
             <button
