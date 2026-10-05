@@ -1739,7 +1739,7 @@ export default function NewsAnnotationTool() {
             </div>
             {renderBackgroundScale(
               "languageEvaluationConfidence",
-              "3. How confident do you feel evaluating persuasive or inflammatory language?",
+              "3. How confident do you feel evaluating persuasive propaganda or inflammatory language?",
               "Not at all confident",
               "Extremely confident"
             )}
