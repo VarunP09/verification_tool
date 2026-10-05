@@ -1720,7 +1720,7 @@ export default function NewsAnnotationTool() {
                 htmlFor="background-news-sources"
                 className="mb-3 block text-lg font-semibold text-gray-900"
               >
-                2. Where do you usually obtain news?
+                2. Where do you usually obtain news? (Ex. Social Media, Fox, CNN, Washington Post, etc.)
               </label>
               <textarea
                 id="background-news-sources"
