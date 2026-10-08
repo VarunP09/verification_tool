@@ -109,8 +109,8 @@ const getSubcategoryDefinition = (label) => {
 
 const TRAINING_SET_PATH = "/article_dataset_versions/TurkerTrainingSet.json";
 const PASSING_PERCENTAGE = 0.75;
-const SUCCESS_CODE = "CQ1VMX6D";
-const FAIL_CODE = "CQ00QK5R";
+const SUCCESS_CODE = "CQDAPDRG";
+const FAIL_CODE = "C16766NH";
 
 const ATTENTION_CHECKS = [
   {
@@ -1658,7 +1658,7 @@ export default function NewsAnnotationTool() {
             type="button"
             onClick={() =>
               window.location.assign(
-                "https://app.prolific.com/submissions/complete?cc=C1M4X6HB"
+                "https://app.prolific.com/submissions/complete?cc=CGI7JMBS"
               )
             }
             className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded"
