@@ -1550,19 +1550,44 @@ export default function NewsAnnotationTool() {
   const [backgroundResponses, setBackgroundResponses] = useState({
     politicalNewsFrequency: "",
     newsSources: "",
-    languageEvaluationConfidence: "",
     identificationConfidenceAgreement: "",
     priorTrainingExperience: "",
+    politicalIdeology: "",
+    politicalIdeologyOther: "",
+    politicalPartyIdentification: "",
   });
   const [backgroundComplete, setBackgroundComplete] = useState(false);
+
+  const politicalIdeologyOptions = [
+    "Extremely liberal",
+    "Moderately liberal",
+    "Centrist",
+    "Moderately conservative",
+    "Extremely conservative",
+    "Other (please specify here)",
+    "Prefer not to say",
+  ];
+  const politicalPartyOptions = [
+    "Strong Democrat",
+    "Democrat",
+    "Lean Democrat",
+    "Independent/Neither",
+    "Lean Republican",
+    "Republican",
+    "Strong Republican",
+    "Prefer not to say",
+  ];
 
   const backgroundAnswered =
     prolificId.trim().length > 0 &&
     [1, 2, 3, 4, 5, 6, 7].includes(backgroundResponses.politicalNewsFrequency) &&
     backgroundResponses.newsSources.trim().length > 0 &&
-    [1, 2, 3, 4, 5, 6, 7].includes(backgroundResponses.languageEvaluationConfidence) &&
     [1, 2, 3, 4, 5, 6, 7].includes(backgroundResponses.identificationConfidenceAgreement) &&
-    ["Yes", "No", "Not sure"].includes(backgroundResponses.priorTrainingExperience);
+    ["Yes", "No", "Not sure"].includes(backgroundResponses.priorTrainingExperience) &&
+    politicalIdeologyOptions.includes(backgroundResponses.politicalIdeology) &&
+    (backgroundResponses.politicalIdeology !== "Other (please specify here)" ||
+      backgroundResponses.politicalIdeologyOther.trim().length > 0) &&
+    politicalPartyOptions.includes(backgroundResponses.politicalPartyIdentification);
 
   function submitBackground(event) {
     event.preventDefault();
@@ -1571,6 +1596,10 @@ export default function NewsAnnotationTool() {
     setBackgroundResponses((previous) => ({
       ...previous,
       newsSources: previous.newsSources.trim(),
+      politicalIdeologyOther:
+        previous.politicalIdeology === "Other (please specify here)"
+          ? previous.politicalIdeologyOther.trim()
+          : "",
     }));
     setBackgroundComplete(true);
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -1681,7 +1710,7 @@ export default function NewsAnnotationTool() {
             A few questions before you begin
           </h1>
           <p className="mb-6 text-gray-600">
-            Please enter your Prolific ID and answer all five questions. These background questions do not
+            Please enter your Prolific ID and answer all six questions. These background questions do not
             affect your eligibility for the study.
           </p>
           <div className="space-y-8">
@@ -1737,15 +1766,9 @@ export default function NewsAnnotationTool() {
                 className="w-full rounded-md border border-gray-300 p-3 text-gray-800"
               />
             </div>
-            {renderBackgroundScale(
-              "languageEvaluationConfidence",
-              "3. How confident do you feel evaluating persuasive propaganda or inflammatory language?",
-              "Not at all confident",
-              "Extremely confident"
-            )}
             <fieldset>
               <legend className="mb-3 text-lg font-semibold text-gray-900">
-                4. Please indicate how much you agree or disagree with the following statement:
+                3. Please indicate how much you agree or disagree with the following statement:
               </legend>
               <p className="mb-4 font-semibold italic text-gray-900">
                 I am confident in my ability to accurately identify persuasive,
@@ -1789,7 +1812,7 @@ export default function NewsAnnotationTool() {
             </fieldset>
             <fieldset>
               <legend className="mb-3 text-lg font-semibold text-gray-900">
-                5. Have you previously received training or professional experience
+                4. Have you previously received training or professional experience
                 in journalism, communication, political science, fact-checking, or
                 media analysis?
               </legend>
@@ -1808,6 +1831,89 @@ export default function NewsAnnotationTool() {
                         setBackgroundResponses((previous) => ({
                           ...previous,
                           priorTrainingExperience: option,
+                        }))
+                      }
+                      required
+                      className="h-4 w-4"
+                    />
+                    <span>{option}</span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+            <fieldset>
+              <legend className="mb-3 text-lg font-semibold text-gray-900">
+                5. Which of the following best describes your political ideology?
+              </legend>
+              <div className="space-y-2">
+                {politicalIdeologyOptions.map((option) => (
+                  <div key={option}>
+                    <label className="flex cursor-pointer items-center gap-3 rounded-md border border-gray-200 px-4 py-3 text-gray-800 hover:bg-gray-50">
+                      <input
+                        type="radio"
+                        name="politicalIdeology"
+                        value={option}
+                        checked={backgroundResponses.politicalIdeology === option}
+                        onChange={() =>
+                          setBackgroundResponses((previous) => ({
+                            ...previous,
+                            politicalIdeology: option,
+                            politicalIdeologyOther:
+                              option === "Other (please specify here)"
+                                ? previous.politicalIdeologyOther
+                                : "",
+                          }))
+                        }
+                        required
+                        className="h-4 w-4"
+                      />
+                      <span>{option}</span>
+                    </label>
+                    {option === "Other (please specify here)" &&
+                      backgroundResponses.politicalIdeology === option && (
+                        <div className="mt-2 ml-4">
+                          <label htmlFor="political-ideology-other" className="mb-2 block text-sm text-gray-700">
+                            Please specify your political ideology:
+                          </label>
+                          <input
+                            id="political-ideology-other"
+                            name="politicalIdeologyOther"
+                            type="text"
+                            value={backgroundResponses.politicalIdeologyOther}
+                            onChange={(event) =>
+                              setBackgroundResponses((previous) => ({
+                                ...previous,
+                                politicalIdeologyOther: event.target.value,
+                              }))
+                            }
+                            required
+                            className="w-full rounded-md border border-gray-300 p-3 text-gray-800"
+                          />
+                        </div>
+                      )}
+                  </div>
+                ))}
+              </div>
+            </fieldset>
+            <fieldset>
+              <legend className="mb-3 text-lg font-semibold text-gray-900">
+                6. How would you describe your political party identification?
+              </legend>
+              <div className="space-y-2">
+                {politicalPartyOptions.map((option) => (
+                  <label
+                    key={option}
+                    className="flex cursor-pointer items-center gap-3 rounded-md border border-gray-200 px-4 py-3 text-gray-800 hover:bg-gray-50"
+                  >
+                    <input
+                      type="radio"
+                      name="politicalPartyIdentification"
+                      value={option}
+                      checked={backgroundResponses.politicalPartyIdentification === option}
+                      onChange={() =>
+                        setBackgroundResponses((previous) => ({
+                          ...previous,
+                          politicalPartyIdentification: option,
                         }))
                       }
                       required
